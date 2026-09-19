@@ -1,6 +1,9 @@
 from fastapi import FastAPI
-app=FastAPI();
+from app.api.v1.chat import router as chat_router
+
+app = FastAPI()
+app.include_router(chat_router)
 
 @app.get("/")
-def home():
-    return {"message" :"Hello"}
+def root():
+    return {"message": "AI proxy router running"}
