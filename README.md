@@ -47,5 +47,19 @@ Visit `http://127.0.0.1:8000/docs` for the API docs.
 ## Project Structure
 (link or paste a short version of your folder structure here)
 
+### Authentication
+
+The backend uses stateless JWT authentication with a short-lived access token
+and a long-lived refresh token:
+
+- `POST /auth/register` with `{ "email": "...", "password": "..." }`
+- `POST /auth/login` with the same fields
+- `POST /auth/refresh` with `{ "refresh_token": "..." }`
+- `GET /auth/me` with `Authorization: Bearer <access_token>`
+
+The chat completion endpoint also requires a valid access token. Refresh
+tokens are signed JWTs and are not stored server-side; changing
+`JWT_SECRET_KEY` invalidates all existing tokens.
+
 ## Author
 Vicky Kumar
