@@ -58,7 +58,8 @@ and a long-lived refresh token:
 - `GET /auth/me` with `Authorization: Bearer <access_token>`
 
 The chat completion endpoint also requires a valid access token. Refresh
-tokens are signed JWTs and are not stored server-side; changing
+tokens are signed JWTs and are tracked in Redis with an expiry. Refresh token
+rotation and `POST /auth/logout` revoke refresh sessions immediately. Changing
 `JWT_SECRET_KEY` invalidates all existing tokens.
 
 ## Author
