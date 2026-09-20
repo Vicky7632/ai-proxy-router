@@ -3,7 +3,23 @@ from redis.exceptions import RedisError
 
 from app.config import settings
 
-redis_client = redis.Redis.from_url(settings.redis_url, decode_responses=True)
+
+def _create_redis_client() -> redis.Redis:
+    if settings.redis_url:
+        return redis.Redis.from_url(settings.redis_url, decode_responses=True)
+
+    return redis.Redis(
+        host=settings.redis_host,
+        port=settings.redis_port,
+        db=settings.redis_db,
+        username=settings.redis_username,
+        password=settings.redis_password,
+        ssl=settings.redis_ssl,
+        decode_responses=True,
+    )
+
+
+redis_client = _create_redis_client()
 
 
 def store_refresh_token(token_id: str, user_id: str, ttl_seconds: int) -> None:

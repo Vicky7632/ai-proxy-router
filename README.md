@@ -62,5 +62,20 @@ tokens are signed JWTs and are tracked in Redis with an expiry. Refresh token
 rotation and `POST /auth/logout` revoke refresh sessions immediately. Changing
 `JWT_SECRET_KEY` invalidates all existing tokens.
 
+For Redis Cloud, configure the client without putting credentials in source
+code:
+
+```env
+REDIS_HOST=redis-12967.c83.us-east-1-2.ec2.cloud.redislabs.com
+REDIS_PORT=12967
+REDIS_USERNAME=default
+REDIS_PASSWORD=your-rotated-redis-cloud-password
+REDIS_SSL=true
+REDIS_DB=0
+```
+
+The client uses `redis.Redis` with TLS for this configuration. `REDIS_URL`
+remains supported and takes precedence when provided.
+
 ## Author
 Vicky Kumar
