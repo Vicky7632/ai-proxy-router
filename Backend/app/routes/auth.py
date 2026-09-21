@@ -1,14 +1,17 @@
 from datetime import timedelta
+from time import time
 from typing import Annotated
 from uuid import uuid4
 
 from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi.security import HTTPAuthorizationCredentials
 from sqlalchemy.orm import Session
 
 from app.config import settings
 from app.db.models.user import User
 from app.db.session import get_db
 from app.middleware.auth import get_current_user
+from app.middleware.auth import bearer_scheme
 from app.schemas.auth import (
     LoginRequest,
     RefreshTokenRequest,
@@ -25,7 +28,9 @@ from app.services.auth_service import (
     verify_password,
 )
 from app.services.redis_service import (
+    blacklist_token,
     consume_refresh_token,
+    is_token_blacklisted,
     revoke_refresh_token,
     store_refresh_token,
 )
@@ -91,7 +96,11 @@ def refresh(
         claims = decode_token_claims(request.refresh_token, "refresh")
         user_id = decode_token(request.refresh_token, "refresh")
         token_id = claims.get("jti")
-        if not token_id or not consume_refresh_token(token_id, str(user_id)):
+        if (
+            not token_id
+            or is_token_blacklisted(token_id)
+            or not consume_refresh_token(token_id, str(user_id))
+        ):
             raise ValueError("Refresh token has been revoked or already used")
     except RuntimeError as exc:
         raise HTTPException(status_code=503, detail=str(exc)) from exc
@@ -114,16 +123,44 @@ def refresh(
 
 
 @router.post("/logout", status_code=status.HTTP_204_NO_CONTENT)
-def logout(request: RefreshTokenRequest) -> None:
+def logout(
+    request: RefreshTokenRequest,
+    credentials: Annotated[
+        HTTPAuthorizationCredentials | None, Depends(bearer_scheme)
+    ],
+) -> None:
+    if credentials is None or credentials.scheme.lower() != "bearer":
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Bearer access token required",
+            headers={"WWW-Authenticate": "Bearer"},
+        )
+
     try:
-        claims = decode_token_claims(request.refresh_token, "refresh")
-        token_id = claims.get("jti")
-        if token_id:
-            revoke_refresh_token(token_id)
+        access_claims = decode_token_claims(credentials.credentials, "access")
+        access_token_id = access_claims.get("jti")
+        access_expiry = int(access_claims["exp"])
+        refresh_claims = decode_token_claims(request.refresh_token, "refresh")
+        refresh_token_id = refresh_claims.get("jti")
+        refresh_expiry = int(refresh_claims["exp"])
+        if not access_token_id or not refresh_token_id:
+            raise ValueError("Token identifier is missing")
+        blacklist_token(
+            access_token_id,
+            access_expiry - int(time()),
+        )
+        revoke_refresh_token(
+            refresh_token_id,
+            refresh_expiry - int(time()),
+        )
     except RuntimeError as exc:
         raise HTTPException(status_code=503, detail=str(exc)) from exc
-    except ValueError:
-        return
+    except (KeyError, TypeError, ValueError) as exc:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Invalid or expired token",
+            headers={"WWW-Authenticate": "Bearer"},
+        ) from exc
 
 
 @router.get("/me", response_model=UserResponse)
