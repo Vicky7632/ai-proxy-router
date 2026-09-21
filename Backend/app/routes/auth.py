@@ -128,6 +128,7 @@ def logout(
     credentials: Annotated[
         HTTPAuthorizationCredentials | None, Depends(bearer_scheme)
     ],
+    current_user: Annotated[User, Depends(get_current_user)],
 ) -> None:
     if credentials is None or credentials.scheme.lower() != "bearer":
         raise HTTPException(
@@ -143,8 +144,12 @@ def logout(
         refresh_claims = decode_token_claims(request.refresh_token, "refresh")
         refresh_token_id = refresh_claims.get("jti")
         refresh_expiry = int(refresh_claims["exp"])
-        if not access_token_id or not refresh_token_id:
-            raise ValueError("Token identifier is missing")
+        if (
+            not access_token_id
+            or not refresh_token_id
+            or refresh_claims.get("sub") != str(current_user.id)
+        ):
+            raise ValueError("Refresh token does not belong to the current user")
         blacklist_token(
             access_token_id,
             access_expiry - int(time()),
