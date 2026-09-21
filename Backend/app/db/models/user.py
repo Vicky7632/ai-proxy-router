@@ -19,12 +19,12 @@ class User(Base):
 
     first_name = Column(
         String,
-        nullable=False
+        nullable=True
     )
 
     last_name = Column(
         String,
-        nullable=False
+        nullable=True
     )
 
     email = Column(

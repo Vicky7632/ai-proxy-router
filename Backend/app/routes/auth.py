@@ -67,7 +67,7 @@ def register(
             detail="A user with this email already exists",
         )
 
-    user = User(email=email, hashed_password=hash_password(request.password))
+    user = User(first_name=request.first_name,last_name=request.last_name,email=email, hashed_password=hash_password(request.password))
     db.add(user)
     db.commit()
     db.refresh(user)
