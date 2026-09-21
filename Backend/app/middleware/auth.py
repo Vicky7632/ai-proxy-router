@@ -7,7 +7,8 @@ from sqlalchemy.orm import Session
 
 from app.db.models.user import User
 from app.db.session import get_db
-from app.services.auth_service import decode_token
+from app.services.auth_service import decode_token_claims
+from app.services.redis_service import is_token_blacklisted
 
 bearer_scheme = HTTPBearer(auto_error=False)
 
@@ -24,7 +25,16 @@ def get_current_user(
         )
 
     try:
-        user_id: UUID = decode_token(credentials.credentials, "access")
+        claims = decode_token_claims(credentials.credentials, "access")
+        token_id = claims.get("jti")
+        if not token_id or is_token_blacklisted(token_id):
+            raise ValueError("Access token has been revoked")
+        user_id = UUID(claims["sub"])
+    except RuntimeError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail=str(exc),
+        ) from exc
     except ValueError as exc:
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,

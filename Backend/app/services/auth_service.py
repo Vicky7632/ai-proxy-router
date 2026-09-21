@@ -1,6 +1,6 @@
 from datetime import datetime, timedelta, timezone
 from typing import Any
-from uuid import UUID
+from uuid import UUID, uuid4
 
 import bcrypt
 from jose import JWTError, jwt
@@ -42,6 +42,7 @@ def create_access_token(user: User) -> str:
         user.id,
         "access",
         timedelta(minutes=settings.access_token_expire_minutes),
+        str(uuid4()),
     )
 
 

@@ -21,6 +21,23 @@ def _create_redis_client() -> redis.Redis:
 
 redis_client = _create_redis_client()
 
+def _blacklist_key(token_id: str) -> str:
+    return f"auth:blacklist:{token_id}"
+
+
+def blacklist_token(token_id: str, ttl_seconds: int) -> None:
+    try:
+        redis_client.setex(_blacklist_key(token_id), max(ttl_seconds, 1), "revoked")
+    except RedisError as exc:
+        raise RuntimeError("Authentication session storage is unavailable") from exc
+
+
+def is_token_blacklisted(token_id: str) -> bool:
+    try:
+        return redis_client.exists(_blacklist_key(token_id)) == 1
+    except RedisError as exc:
+        raise RuntimeError("Authentication session storage is unavailable") from exc
+
 
 def store_refresh_token(token_id: str, user_id: str, ttl_seconds: int) -> None:
     try:
@@ -49,8 +66,9 @@ def consume_refresh_token(token_id: str, user_id: str) -> bool:
         raise RuntimeError("Authentication session storage is unavailable") from exc
 
 
-def revoke_refresh_token(token_id: str) -> None:
+def revoke_refresh_token(token_id: str, ttl_seconds: int) -> None:
     try:
         redis_client.delete(f"auth:refresh:{token_id}")
+        blacklist_token(token_id, ttl_seconds)
     except RedisError as exc:
         raise RuntimeError("Authentication session storage is unavailable") from exc
