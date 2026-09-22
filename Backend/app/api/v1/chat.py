@@ -1,10 +1,7 @@
-from typing import Annotated
-
 from fastapi import APIRouter, Depends, HTTPException
 import httpx
-from app.config import settings
-from app.db.models.user import User
-from app.middleware.auth import get_current_user
+from app.db.models.api_key import APIKey
+from app.middleware.auth import verify_api_key
 from app.schemas.chat import ChatCompletionRequest
 
 router = APIRouter()
@@ -14,7 +11,7 @@ GROQ_URL = "https://api.groq.com/openai/v1/chat/completions"
 @router.post("/v1/chat/completions")
 async def chat_completions(
     request: ChatCompletionRequest,
-    current_user: Annotated[User, Depends(get_current_user)],
+    api_key: APIKey = Depends(verify_api_key),
 ):
     headers = {
         "Authorization": f"Bearer {settings.groq_api_key}",

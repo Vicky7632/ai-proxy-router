@@ -61,8 +61,16 @@ long-lived refresh token:
   `{ "refresh_token": "..." }`
 - `GET /auth/me` with `Authorization: Bearer <access_token>`
 
-The chat completion endpoint also requires a valid access token. Refresh
-tokens are signed JWTs and tracked in Redis with an expiry. Refresh-token
+The dashboard endpoints use the JWT access and refresh-token cookies described
+above. API keys are separate credentials for proxy usage:
+
+- `POST /keys` with the authenticated access-token cookie to generate a key.
+  The raw key is returned only once; only its SHA-256 hash is stored.
+- `POST /v1/chat/completions` with `Authorization: Bearer sk-...`.
+  Requests without an active API key are rejected with `401 Unauthorized`.
+
+The chat completion endpoint does not use the dashboard JWT as its API
+credential. Refresh tokens are signed JWTs and tracked in Redis with an expiry. Refresh-token
 rotation and logout revoke refresh sessions immediately.
 The access token is also blacklisted in Redis until its expiry, so previously
 issued access tokens cannot be used after logout.
