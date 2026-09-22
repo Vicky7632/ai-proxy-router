@@ -1,7 +1,7 @@
 from fastapi import APIRouter, Depends, HTTPException
 import httpx
 from app.db.models.api_key import APIKey
-from app.middleware.auth import verify_api_key
+from app.services.api_key_service import get_api_key
 from app.schemas.chat import ChatCompletionRequest
 
 router = APIRouter()
@@ -11,7 +11,7 @@ GROQ_URL = "https://api.groq.com/openai/v1/chat/completions"
 @router.post("/v1/chat/completions")
 async def chat_completions(
     request: ChatCompletionRequest,
-    api_key: APIKey = Depends(verify_api_key),
+    api_key: APIKey = Depends(get_api_key),
 ):
     headers = {
         "Authorization": f"Bearer {settings.groq_api_key}",

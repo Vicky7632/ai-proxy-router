@@ -1,11 +1,9 @@
-import hashlib
 from typing import Annotated
 from uuid import UUID
 
-from fastapi import Cookie, Depends, Header, HTTPException, status
+from fastapi import Cookie, Depends, HTTPException, status
 from sqlalchemy.orm import Session
 
-from app.db.models.api_key import APIKey
 from app.db.models.user import User
 from app.db.session import get_db
 from app.services.auth_service import decode_token_claims
@@ -37,34 +35,3 @@ def get_current_user(
     if user is None:
         raise HTTPException(status_code=401, detail="User not found")
     return user
-
-
-def verify_api_key(
-    db: Annotated[Session, Depends(get_db)],
-    authorization: Annotated[str | None, Header()] = None,
-) -> APIKey:
-    if authorization is None or not authorization.startswith("Bearer "):
-        raise HTTPException(
-            status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="Invalid authorization header",
-        )
-
-    raw_key = authorization.removeprefix("Bearer ").strip()
-    if not raw_key:
-        raise HTTPException(
-            status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="Invalid API key",
-        )
-
-    key_hash = hashlib.sha256(raw_key.encode("utf-8")).hexdigest()
-    api_key = (
-        db.query(APIKey)
-        .filter(APIKey.key_hash == key_hash, APIKey.is_active.is_(True))
-        .first()
-    )
-    if api_key is None:
-        raise HTTPException(
-            status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="Invalid API key",
-        )
-    return api_key
