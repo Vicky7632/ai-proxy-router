@@ -1,6 +1,6 @@
 import uuid
 from datetime import datetime
-from sqlalchemy import Column, String, DateTime, Float, Integer, Boolean, ForeignKey
+from sqlalchemy import Boolean, Column, DateTime, Float, ForeignKey, Integer, String
 from sqlalchemy.dialects.postgresql import UUID
 from app.db.base import Base
 
@@ -14,7 +14,7 @@ class RequestLog(Base):
     input_tokens = Column(Integer, default=0)
     output_tokens = Column(Integer, default=0)
     latency_ms = Column(Integer, nullable=True)
-    status = Column(String, nullable=False)         
+    status = Column(String, nullable=False)
     cache_hit = Column(Boolean, default=False)
     cost = Column(Float, default=0.0)
     created_at = Column(DateTime, default=datetime.utcnow)
