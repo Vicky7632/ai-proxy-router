@@ -2,20 +2,17 @@ import logging
 import time
 
 from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException
-import httpx
 
-from app.config import settings
 from app.db.models.api_key import APIKey
 from app.db.models.provider import Provider
 from app.db.models.request_log import RequestLog
 from app.db.session import SessionLocal
-from app.services.api_key_service import get_api_key
+from app.providers.groq import GroqProvider
 from app.schemas.chat import ChatCompletionRequest
+from app.services.api_key_service import get_api_key
 
 router = APIRouter()
 logger = logging.getLogger(__name__)
-
-GROQ_URL = "https://api.groq.com/openai/v1/chat/completions"
 
 
 def save_request_log(
@@ -81,63 +78,22 @@ async def chat_completions(
     api_key: APIKey = Depends(get_api_key),
 ):
     started_at = time.perf_counter()
-    groq_api_key = settings.groq_api_key
 
-    if not groq_api_key:
-        raise HTTPException(
-            status_code=500,
-            detail="GROQ_API_KEY is not configured",
+    try:
+        response_data = await GroqProvider().chat_completion(request)
+    except HTTPException as error:
+        background_tasks.add_task(
+            save_request_log,
+            api_key.id,
+            "groq",
+            request.model,
+            None,
+            None,
+            round((time.perf_counter() - started_at) * 1000),
+            error.status_code,
         )
+        raise
 
-    headers = {
-        "Authorization": f"Bearer {groq_api_key}",
-        "Content-Type": "application/json",
-    }
-
-    payload = request.model_dump()
-
-    async with httpx.AsyncClient(timeout=30.0) as client:
-        try:
-            response = await client.post(
-                GROQ_URL,
-                json=payload,
-                headers=headers,
-            )
-            response.raise_for_status()
-
-        except httpx.HTTPStatusError as e:
-            background_tasks.add_task(
-                save_request_log,
-                api_key.id,
-                "groq",
-                request.model,
-                None,
-                None,
-                round((time.perf_counter() - started_at) * 1000),
-                e.response.status_code,
-            )
-            raise HTTPException(
-                status_code=e.response.status_code,
-                detail=e.response.text,
-            )
-
-        except httpx.RequestError as e:
-            background_tasks.add_task(
-                save_request_log,
-                api_key.id,
-                "groq",
-                request.model,
-                None,
-                None,
-                round((time.perf_counter() - started_at) * 1000),
-                502,
-            )
-            raise HTTPException(
-                status_code=502,
-                detail=f"Provider request failed: {str(e)}",
-            )
-
-    response_data = response.json()
     usage = response_data.get("usage") or {}
     response_model = response_data.get("model") or request.model
     background_tasks.add_task(
@@ -148,7 +104,7 @@ async def chat_completions(
         usage.get("prompt_tokens"),
         usage.get("completion_tokens"),
         round((time.perf_counter() - started_at) * 1000),
-        response.status_code,
+        200,
     )
 
     return response_data
