@@ -5,6 +5,8 @@ from pydantic_settings import BaseSettings, SettingsConfigDict
 class Settings(BaseSettings):
     database_url: str
     groq_api_key: str
+    gemini_api_key: str | None = None
+    openrouter_api_key: str | None = None
     redis_url: str | None = None
     redis_host: str = "localhost"
     redis_port: int = 6379
