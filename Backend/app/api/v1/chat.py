@@ -7,12 +7,13 @@ from app.db.models.api_key import APIKey
 from app.db.models.provider import Provider
 from app.db.models.request_log import RequestLog
 from app.db.session import SessionLocal
-from app.providers.groq import GroqProvider
+from app.providers.router import RouterEngine
 from app.schemas.chat import ChatCompletionRequest
 from app.services.api_key_service import get_api_key
 
 router = APIRouter()
 logger = logging.getLogger(__name__)
+router_engine = RouterEngine()
 
 
 def save_request_log(
@@ -80,12 +81,16 @@ async def chat_completions(
     started_at = time.perf_counter()
 
     try:
-        response_data = await GroqProvider().chat_completion(request)
+        _, resolved_model = router_engine.resolve(request.model)
+        request = request.model_copy(update={"model": resolved_model})
+        routed_completion = await router_engine.chat_completion(request)
+        response_data = routed_completion.response
+        serving_provider = routed_completion.provider
     except HTTPException as error:
         background_tasks.add_task(
             save_request_log,
             api_key.id,
-            "groq",
+            router_engine.provider_name(request.model),
             request.model,
             None,
             None,
@@ -99,7 +104,7 @@ async def chat_completions(
     background_tasks.add_task(
         save_request_log,
         api_key.id,
-        "groq",
+        serving_provider,
         response_model,
         usage.get("prompt_tokens"),
         usage.get("completion_tokens"),
