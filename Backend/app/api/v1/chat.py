@@ -1,13 +1,17 @@
+import asyncio
+import json
 import logging
 import time
+from collections.abc import AsyncIterator
 
 from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException
+from starlette.responses import StreamingResponse
 
 from app.db.models.api_key import APIKey
 from app.db.models.provider import Provider
 from app.db.models.request_log import RequestLog
 from app.db.session import SessionLocal
-from app.providers.router import RouterEngine
+from app.providers.router import RoutedStream, RouterEngine
 from app.schemas.chat import ChatCompletionRequest
 from app.services.api_key_service import get_api_key
 
@@ -72,6 +76,84 @@ def save_request_log(
         db.close()
 
 
+async def stream_with_logging(
+    routed_stream: RoutedStream,
+    background_tasks: BackgroundTasks,
+    api_key_id,
+    started_at: float,
+) -> AsyncIterator[bytes]:
+    prompt_tokens: int | None = None
+    completion_tokens: int | None = None
+    response_model = routed_stream.model
+    status = 200
+    pending = b""
+
+    def inspect_event_line(line: bytes) -> None:
+        nonlocal prompt_tokens, completion_tokens, response_model
+        line = line.rstrip(b"\r")
+        if not line.startswith(b"data:"):
+            return
+        payload = line[5:].strip()
+        if not payload or payload == b"[DONE]":
+            return
+        try:
+            event = json.loads(payload)
+        except json.JSONDecodeError:
+            return
+        if not isinstance(event, dict):
+            return
+        usage = event.get("usage") or {}
+        if isinstance(usage, dict):
+            prompt_tokens = usage.get("prompt_tokens", prompt_tokens)
+            completion_tokens = usage.get(
+                "completion_tokens", completion_tokens
+            )
+        response_model = event.get("model") or response_model
+
+    try:
+        async for chunk in routed_stream.stream.chunks:
+            pending += chunk
+            lines = pending.split(b"\n")
+            pending = lines.pop()
+            for line in lines:
+                inspect_event_line(line)
+            yield chunk
+        if pending:
+            inspect_event_line(pending)
+    except HTTPException as error:
+        status = error.status_code
+        raise
+    except asyncio.CancelledError:
+        status = 499
+        raise
+    except GeneratorExit:
+        status = 499
+        raise
+    except Exception:
+        status = 502
+        raise
+    finally:
+        try:
+            await routed_stream.stream.close()
+        except Exception:
+            status = 502
+            raise
+        finally:
+            log_args = (
+                api_key_id,
+                routed_stream.provider,
+                response_model,
+                prompt_tokens,
+                completion_tokens,
+                round((time.perf_counter() - started_at) * 1000),
+                status,
+            )
+            if status == 200:
+                background_tasks.add_task(save_request_log, *log_args)
+            else:
+                await asyncio.to_thread(save_request_log, *log_args)
+
+
 @router.post("/v1/chat/completions")
 async def chat_completions(
     request: ChatCompletionRequest,
@@ -83,6 +165,18 @@ async def chat_completions(
     try:
         _, resolved_model = router_engine.resolve(request.model)
         request = request.model_copy(update={"model": resolved_model})
+        if request.stream:
+            routed_stream = await router_engine.chat_completion_stream(request)
+            return StreamingResponse(
+                stream_with_logging(
+                    routed_stream,
+                    background_tasks,
+                    api_key.id,
+                    started_at,
+                ),
+                media_type="text/event-stream",
+                background=background_tasks,
+            )
         routed_completion = await router_engine.chat_completion(request)
         response_data = routed_completion.response
         serving_provider = routed_completion.provider
