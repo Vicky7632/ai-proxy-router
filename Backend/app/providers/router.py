@@ -4,7 +4,7 @@ from typing import Any
 from fastapi import HTTPException
 import httpx
 
-from app.providers.base import ProviderAdapter
+from app.providers.base import ProviderAdapter, ProviderStream
 from app.providers.gemini import GeminiProvider
 from app.providers.groq import GroqProvider
 from app.providers.openrouter import OpenRouterProvider
@@ -30,6 +30,13 @@ PROVIDER_MODELS = {
 class RoutedCompletion:
     response: dict[str, Any]
     provider: str
+
+
+@dataclass(frozen=True)
+class RoutedStream:
+    stream: ProviderStream
+    provider: str
+    model: str
 
 
 class RouterEngine:
@@ -90,6 +97,40 @@ class RouterEngine:
             try:
                 response = await provider.chat_completion(provider_request)
                 return RoutedCompletion(response=response, provider=provider_name)
+            except (HTTPException, httpx.TimeoutException, httpx.RequestError) as error:
+                if not self._is_retryable(error):
+                    raise
+                last_error = self._as_http_exception(error)
+
+        if last_error is not None:
+            raise last_error
+        raise HTTPException(status_code=502, detail="All providers failed")
+
+    async def chat_completion_stream(
+        self, request: ChatCompletionRequest
+    ) -> RoutedStream:
+        initial_provider = self.provider_name(request.model)
+        start_index = PROVIDER_ORDER.index(initial_provider)
+        providers_to_try = PROVIDER_ORDER[start_index:]
+        last_error: HTTPException | None = None
+
+        for provider_name in providers_to_try:
+            provider = self.providers[provider_name]
+            resolved_model = (
+                PROVIDER_MODELS[provider_name]
+                if request.model == "auto" or provider_name != initial_provider
+                else request.model
+            )
+            provider_request = request.model_copy(
+                update={"model": resolved_model, "stream": True}
+            )
+            try:
+                stream = await provider.chat_completion_stream(provider_request)
+                return RoutedStream(
+                    stream=stream,
+                    provider=provider_name,
+                    model=resolved_model,
+                )
             except (HTTPException, httpx.TimeoutException, httpx.RequestError) as error:
                 if not self._is_retryable(error):
                     raise
