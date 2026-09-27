@@ -88,7 +88,7 @@ class RateLimiter:
         now_ms = int(now * 1000)
         bucket_key = f"bucket:{api_key_id}"
         window_key = f"window:{api_key_id}"
-        refill_per_second = self.refill_tokens / self.refill_interval_seconds
+        refill_per_second = self.refill_tokens / self.window_seconds
         bucket_ttl = max(
             1,
             math.ceil(self.capacity / refill_per_second * 2),
