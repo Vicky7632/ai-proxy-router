@@ -303,6 +303,11 @@ async def test_non_streaming_endpoint_keeps_json_response(monkeypatch):
     monkeypatch.setattr(chat_api, "router_engine", engine)
     monkeypatch.setattr(chat_api, "save_request_log", lambda *args: None)
 
+    async def allow_request(api_key_id):
+        return 9
+
+    monkeypatch.setattr(chat_api.rate_limiter, "check_limit", allow_request)
+
     result = await chat_api.chat_completions(
         request("auto"),
         BackgroundTasks(),
@@ -319,6 +324,11 @@ async def test_streaming_endpoint_returns_sse_response(monkeypatch):
     )
     monkeypatch.setattr(chat_api, "router_engine", engine)
     monkeypatch.setattr(chat_api, "save_request_log", lambda *args: None)
+
+    async def allow_request(api_key_id):
+        return 9
+
+    monkeypatch.setattr(chat_api.rate_limiter, "check_limit", allow_request)
     background_tasks = BackgroundTasks()
 
     response = await chat_api.chat_completions(

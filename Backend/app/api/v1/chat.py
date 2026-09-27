@@ -14,6 +14,7 @@ from app.db.session import SessionLocal
 from app.providers.router import RoutedStream, RouterEngine
 from app.schemas.chat import ChatCompletionRequest
 from app.services.api_key_service import get_api_key
+from app.services.rate_limiter import rate_limiter
 
 router = APIRouter()
 logger = logging.getLogger(__name__)
@@ -163,6 +164,7 @@ async def chat_completions(
     started_at = time.perf_counter()
 
     try:
+        await rate_limiter.check_limit(api_key.id)
         _, resolved_model = router_engine.resolve(request.model)
         request = request.model_copy(update={"model": resolved_model})
         if request.stream:
