@@ -5,7 +5,7 @@ import time
 from collections.abc import AsyncIterator
 
 from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException
-from starlette.responses import StreamingResponse
+from starlette.responses import Response, StreamingResponse
 
 from app.db.models.api_key import APIKey
 from app.db.models.provider import Provider
@@ -13,6 +13,7 @@ from app.db.models.request_log import RequestLog
 from app.db.session import SessionLocal
 from app.providers.router import RoutedStream, RouterEngine
 from app.schemas.chat import ChatCompletionRequest
+from app.services import budget_service
 from app.services.api_key_service import get_api_key
 from app.services.rate_limiter import rate_limiter
 
@@ -36,6 +37,8 @@ def save_request_log(
         status,
     )
     db = SessionLocal()
+    request_log_id = None
+    provider_configured = False
     try:
         provider = (
             db.query(Provider)
@@ -43,6 +46,7 @@ def save_request_log(
             .first()
         )
         provider_id = provider.id if provider is not None else None
+        provider_configured = provider is not None
         if provider is None:
             logger.warning(
                 "Provider %s is not configured; saving request log with provider_id=NULL",
@@ -57,17 +61,18 @@ def save_request_log(
             db.bind.url.database if db.bind is not None else None,
             db.bind.url.host if db.bind is not None else None,
         )
-        db.add(
-            RequestLog(
-                api_key_id=api_key_id,
-                provider_id=provider_id,
-                model=model,
-                input_tokens=prompt_tokens or 0,
-                output_tokens=completion_tokens or 0,
-                latency_ms=latency_ms,
-                status=str(status),
-            )
+        request_log = RequestLog(
+            api_key_id=api_key_id,
+            provider_id=provider_id,
+            model=model,
+            input_tokens=prompt_tokens or 0,
+            output_tokens=completion_tokens or 0,
+            latency_ms=latency_ms,
+            status=str(status),
         )
+        db.add(request_log)
+        db.flush()
+        request_log_id = request_log.id
         db.commit()
         logger.info("Request log saved api_key_id=%s status=%s", api_key_id, status)
     except Exception:
@@ -75,6 +80,38 @@ def save_request_log(
         logger.exception("Failed to save request log")
     finally:
         db.close()
+
+    if (
+        provider_configured
+        and request_log_id is not None
+        and status == 200
+        and prompt_tokens is not None
+        and completion_tokens is not None
+    ):
+        try:
+            cost = budget_service.update_spend(
+                api_key_id,
+                provider_name,
+                prompt_tokens,
+                completion_tokens,
+                request_log_id=request_log_id,
+            )
+            logger.info(
+                "Request spend updated api_key_id=%s request_log_id=%s cost=%s",
+                api_key_id,
+                request_log_id,
+                cost,
+            )
+        except Exception:
+            logger.exception(
+                "Failed to update spend api_key_id=%s request_log_id=%s",
+                api_key_id,
+                request_log_id,
+            )
+
+
+def format_budget_header(remaining_budget: float) -> str:
+    return f"{remaining_budget:.8f}".rstrip("0").rstrip(".")
 
 
 async def stream_with_logging(
@@ -159,16 +196,23 @@ async def stream_with_logging(
 async def chat_completions(
     request: ChatCompletionRequest,
     background_tasks: BackgroundTasks,
+    response: Response,
     api_key: APIKey = Depends(get_api_key),
 ):
     started_at = time.perf_counter()
 
     try:
         await rate_limiter.check_limit(api_key.id)
+        remaining_budget = await budget_service.check_budget(api_key)
         _, resolved_model = router_engine.resolve(request.model)
         request = request.model_copy(update={"model": resolved_model})
         if request.stream:
             routed_stream = await router_engine.chat_completion_stream(request)
+            headers = (
+                {"X-Remaining-Budget": format_budget_header(remaining_budget)}
+                if remaining_budget is not None
+                else None
+            )
             return StreamingResponse(
                 stream_with_logging(
                     routed_stream,
@@ -178,6 +222,7 @@ async def chat_completions(
                 ),
                 media_type="text/event-stream",
                 background=background_tasks,
+                headers=headers,
             )
         routed_completion = await router_engine.chat_completion(request)
         response_data = routed_completion.response
@@ -207,5 +252,9 @@ async def chat_completions(
         round((time.perf_counter() - started_at) * 1000),
         200,
     )
+    if remaining_budget is not None:
+        response.headers["X-Remaining-Budget"] = format_budget_header(
+            remaining_budget
+        )
 
     return response_data
