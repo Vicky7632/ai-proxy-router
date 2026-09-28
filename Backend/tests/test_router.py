@@ -6,6 +6,7 @@ os.environ.setdefault("JWT_SECRET_KEY", "test-secret")
 
 import pytest
 from fastapi import BackgroundTasks, HTTPException
+from starlette.responses import Response
 
 import app.api.v1.chat as chat_api
 from app.providers.gemini import GeminiProvider
@@ -307,14 +308,21 @@ async def test_non_streaming_endpoint_keeps_json_response(monkeypatch):
         return 9
 
     monkeypatch.setattr(chat_api.rate_limiter, "check_limit", allow_request)
+    async def budget_left(api_key):
+        return 3.42
+
+    monkeypatch.setattr(chat_api.budget_service, "check_budget", budget_left)
+    response = Response()
 
     result = await chat_api.chat_completions(
         request("auto"),
         BackgroundTasks(),
+        response,
         type("APIKeyStub", (), {"id": "key-id"})(),
     )
 
     assert result == {"id": "ok"}
+    assert response.headers["X-Remaining-Budget"] == "3.42"
 
 
 @pytest.mark.asyncio
@@ -329,17 +337,23 @@ async def test_streaming_endpoint_returns_sse_response(monkeypatch):
         return 9
 
     monkeypatch.setattr(chat_api.rate_limiter, "check_limit", allow_request)
+    async def budget_left(api_key):
+        return 3.42
+
+    monkeypatch.setattr(chat_api.budget_service, "check_budget", budget_left)
     background_tasks = BackgroundTasks()
 
     response = await chat_api.chat_completions(
         request("openai/gpt-oss-20b", stream=True),
         background_tasks,
+        Response(),
         type("APIKeyStub", (), {"id": "key-id"})(),
     )
     body = [chunk async for chunk in response.body_iterator]
     await response.background()
 
     assert response.media_type == "text/event-stream"
+    assert response.headers["X-Remaining-Budget"] == "3.42"
     assert body == [
         b'data: {"model":"test-model"}\n\n',
         b"data: [DONE]\n\n",

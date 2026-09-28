@@ -13,6 +13,7 @@ class APIKey(Base):
     name = Column(String, nullable=True)              
     budget_limit = Column(Float, nullable=True)        
     current_spend = Column(Float, default=0.0)
+    budget_reset_at = Column(DateTime, nullable=True)
     is_active = Column(Boolean, default=True)
     created_at = Column(DateTime, default=datetime.utcnow)
     revoked_at = Column(DateTime, nullable=True)
