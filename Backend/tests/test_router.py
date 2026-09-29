@@ -1,3 +1,4 @@
+import asyncio
 import os
 
 os.environ.setdefault("DATABASE_URL", "sqlite:///./test.db")
@@ -312,6 +313,17 @@ async def test_non_streaming_endpoint_keeps_json_response(monkeypatch):
         return 3.42
 
     monkeypatch.setattr(chat_api.budget_service, "check_budget", budget_left)
+    monkeypatch.setattr(chat_api.cache_service, "get_cache_key", lambda request: "key")
+    monkeypatch.setattr(
+        chat_api.cache_service,
+        "get_cached_response",
+        lambda request, cache_key=None: asyncio.sleep(0, result=None),
+    )
+    monkeypatch.setattr(
+        chat_api.cache_service,
+        "save_cached_response",
+        lambda *args, **kwargs: asyncio.sleep(0),
+    )
     response = Response()
 
     result = await chat_api.chat_completions(
@@ -341,6 +353,11 @@ async def test_streaming_endpoint_returns_sse_response(monkeypatch):
         return 3.42
 
     monkeypatch.setattr(chat_api.budget_service, "check_budget", budget_left)
+    monkeypatch.setattr(
+        chat_api.cache_service,
+        "get_cached_response",
+        lambda *args, **kwargs: pytest.fail("streaming must bypass the cache"),
+    )
     background_tasks = BackgroundTasks()
 
     response = await chat_api.chat_completions(
