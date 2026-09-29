@@ -4,7 +4,7 @@
   "messages": [
     {
       "role": "user",
-      "content": "Write a short one-line greeting."
+      "content": "Hello Redis Cache"
     }
   ]
 }

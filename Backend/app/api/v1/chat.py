@@ -5,7 +5,9 @@ import time
 from collections.abc import AsyncIterator
 
 from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException
-from starlette.responses import JSONResponse, Response, StreamingResponse
+from starlette.responses import Response, StreamingResponse
+from fastapi.responses import JSONResponse
+from app.services import cache_service
 
 from app.db.models.api_key import APIKey
 from app.db.models.provider import Provider
@@ -14,7 +16,6 @@ from app.db.session import SessionLocal
 from app.providers.router import RoutedStream, RouterEngine
 from app.schemas.chat import ChatCompletionRequest
 from app.services import budget_service
-from app.services import cache_service
 from app.services.api_key_service import get_api_key
 from app.services.rate_limiter import rate_limiter
 
@@ -25,13 +26,12 @@ router_engine = RouterEngine()
 
 def save_request_log(
     api_key_id,
-    provider_name: str | None,
+    provider_name: str,
     model: str,
     prompt_tokens: int | None,
     completion_tokens: int | None,
     latency_ms: int,
     status: int,
-    cache_hit: bool = False,
 ) -> None:
     logger.info(
         "Request log background task started api_key_id=%s status=%s",
@@ -42,16 +42,14 @@ def save_request_log(
     request_log_id = None
     provider_configured = False
     try:
-        provider = None
-        if provider_name is not None:
-            provider = (
-                db.query(Provider)
-                .filter(Provider.name == provider_name)
-                .first()
-            )
+        provider = (
+            db.query(Provider)
+            .filter(Provider.name == provider_name)
+            .first()
+        )
         provider_id = provider.id if provider is not None else None
         provider_configured = provider is not None
-        if provider is None and provider_name is not None:
+        if provider is None:
             logger.warning(
                 "Provider %s is not configured; saving request log with provider_id=NULL",
                 provider_name,
@@ -73,7 +71,6 @@ def save_request_log(
             output_tokens=completion_tokens or 0,
             latency_ms=latency_ms,
             status=str(status),
-            cache_hit=cache_hit,
         )
         db.add(request_log)
         db.flush()
@@ -205,53 +202,62 @@ async def chat_completions(
     api_key: APIKey = Depends(get_api_key),
 ):
     started_at = time.perf_counter()
+    remaining_budget = None
+    cache_key = None
 
     try:
+        # Existing auth/rate-limit/budget flow
         await rate_limiter.check_limit(api_key.id)
         remaining_budget = await budget_service.check_budget(api_key)
+
+        # Resolve model before caching so identical routed requests hash the same
         _, resolved_model = router_engine.resolve(request.model)
         request = request.model_copy(update={"model": resolved_model})
-        cache_key = None
+
+        # ---------- CACHE LOOKUP (non-stream only) ----------
         if not request.stream:
             cache_key = cache_service.get_cache_key(request)
+
             cached_response = await cache_service.get_cached_response(
-                request,
+                request=request,
                 cache_key=cache_key,
             )
+
             if cached_response is not None:
                 background_tasks.add_task(
                     save_request_log,
                     api_key.id,
-                    None,
+                    "cache",
                     request.model,
                     None,
                     None,
                     round((time.perf_counter() - started_at) * 1000),
                     200,
-                    True,
                 )
-                response.headers["X-Cache"] = "HIT"
-                if remaining_budget is not None:
-                    response.headers["X-Remaining-Budget"] = format_budget_header(
-                        remaining_budget
-                    )
+
                 headers = {"X-Cache": "HIT"}
+
                 if remaining_budget is not None:
                     headers["X-Remaining-Budget"] = format_budget_header(
                         remaining_budget
                     )
+
                 return JSONResponse(
                     content=cached_response,
                     headers=headers,
                     background=background_tasks,
                 )
+
+        # ---------- STREAMING (unchanged) ----------
         if request.stream:
             routed_stream = await router_engine.chat_completion_stream(request)
+
             headers = (
                 {"X-Remaining-Budget": format_budget_header(remaining_budget)}
                 if remaining_budget is not None
                 else None
             )
+
             return StreamingResponse(
                 stream_with_logging(
                     routed_stream,
@@ -263,14 +269,20 @@ async def chat_completions(
                 background=background_tasks,
                 headers=headers,
             )
+
+        # ---------- PROVIDER CALL ----------
         routed_completion = await router_engine.chat_completion(request)
         response_data = routed_completion.response
         serving_provider = routed_completion.provider
-        await cache_service.save_cached_response(
-            request=request,
-            response=response_data,
-            cache_key=cache_key,
-        )
+
+        # ---------- CACHE SAVE ----------
+        if cache_key is not None:
+            await cache_service.save_cached_response(
+                request=request,
+                response=response_data,
+                cache_key=cache_key,
+            )
+
     except HTTPException as error:
         background_tasks.add_task(
             save_request_log,
@@ -284,8 +296,10 @@ async def chat_completions(
         )
         raise
 
+    # Existing logging
     usage = response_data.get("usage") or {}
     response_model = response_data.get("model") or request.model
+
     background_tasks.add_task(
         save_request_log,
         api_key.id,
@@ -296,15 +310,15 @@ async def chat_completions(
         round((time.perf_counter() - started_at) * 1000),
         200,
     )
+
+    # ---------- FINAL RESPONSE ----------
+    headers = {"X-Cache": "MISS"}
+
     if remaining_budget is not None:
-        response.headers["X-Remaining-Budget"] = format_budget_header(
+        headers["X-Remaining-Budget"] = format_budget_header(
             remaining_budget
         )
-    response.headers["X-Cache"] = "MISS"
 
-    headers = {"X-Cache": "MISS"}
-    if remaining_budget is not None:
-        headers["X-Remaining-Budget"] = format_budget_header(remaining_budget)
     return JSONResponse(
         content=response_data,
         headers=headers,
