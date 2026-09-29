@@ -230,11 +230,6 @@ async def chat_completions(
                     200,
                     True,
                 )
-                response.headers["X-Cache"] = "HIT"
-                if remaining_budget is not None:
-                    response.headers["X-Remaining-Budget"] = format_budget_header(
-                        remaining_budget
-                    )
                 headers = {"X-Cache": "HIT"}
                 if remaining_budget is not None:
                     headers["X-Remaining-Budget"] = format_budget_header(
@@ -300,8 +295,6 @@ async def chat_completions(
         response.headers["X-Remaining-Budget"] = format_budget_header(
             remaining_budget
         )
-    response.headers["X-Cache"] = "MISS"
-
     headers = {"X-Cache": "MISS"}
     if remaining_budget is not None:
         headers["X-Remaining-Budget"] = format_budget_header(remaining_budget)
