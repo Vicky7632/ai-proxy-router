@@ -1,3 +1,4 @@
+import json
 import os
 import time
 from types import SimpleNamespace
@@ -117,7 +118,7 @@ async def test_identical_requests_share_cache_and_route_once(monkeypatch):
         return 9
 
     async def allow_budget(api_key):
-        return None
+        return 3.42
 
     class FakeEngine:
         def __init__(self):
@@ -162,12 +163,15 @@ async def test_identical_requests_share_cache_and_route_once(monkeypatch):
         api_key,
     )
 
-    assert first == second
+    assert first.status_code == 200
+    assert second.status_code == 200
+    assert first.headers["X-Cache"] == "MISS"
+    assert second.headers["X-Cache"] == "HIT"
+    assert first.headers["X-Remaining-Budget"] == "3.42"
+    assert second.headers["X-Remaining-Budget"] == "3.42"
+    assert json.loads(first.body) == json.loads(second.body)
     assert engine.calls == 1
-    assert first_response.headers["X-Cache"] == "MISS"
-    assert second_response.headers["X-Cache"] == "HIT"
-    assert "X-Remaining-Budget" not in second_response.headers
     hit_log_args = second_tasks.tasks[0].args
-    assert hit_log_args[1] is None
+    assert hit_log_args[1] == "cache"
     assert hit_log_args[3:5] == (None, None)
-    assert hit_log_args[-1] is True
+    assert hit_log_args[-1] == 200
