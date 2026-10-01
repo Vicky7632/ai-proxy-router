@@ -1,5 +1,6 @@
 from pathlib import Path
 
+from pydantic import Field
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 class Settings(BaseSettings):
@@ -7,6 +8,11 @@ class Settings(BaseSettings):
     groq_api_key: str
     gemini_api_key: str | None = None
     openrouter_api_key: str | None = None
+    semantic_cache_similarity_threshold: float = Field(
+        default=0.90,
+        ge=0.0,
+        le=1.0,
+    )
     redis_url: str | None = None
     redis_host: str = "localhost"
     redis_port: int = 6379
