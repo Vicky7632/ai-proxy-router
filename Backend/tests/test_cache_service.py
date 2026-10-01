@@ -143,6 +143,11 @@ async def test_identical_requests_share_cache_and_route_once(monkeypatch):
     monkeypatch.setattr(chat_api.rate_limiter, "check_limit", allow_rate_limit)
     monkeypatch.setattr(chat_api.budget_service, "check_budget", allow_budget)
     monkeypatch.setattr(chat_api, "save_request_log", lambda *args: None)
+    monkeypatch.setattr(
+        chat_api.semantic_cache_service,
+        "lookup_semantic_cache",
+        _semantic_miss,
+    )
 
     api_key = SimpleNamespace(id=uuid4())
     first_tasks = BackgroundTasks()
@@ -175,3 +180,11 @@ async def test_identical_requests_share_cache_and_route_once(monkeypatch):
     assert hit_log_args[1] == "cache"
     assert hit_log_args[3:5] == (None, None)
     assert hit_log_args[-1] == 200
+
+
+async def _semantic_miss(prompt, model):
+    return chat_api.semantic_cache_service.SemanticCacheLookup(
+        prompt=prompt,
+        embedding=None,
+        hit=None,
+    )

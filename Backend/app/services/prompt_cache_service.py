@@ -65,6 +65,7 @@ class SemanticCacheHit:
 async def find_similar_prompt_cache(
     embedding: list[float],
     similarity_threshold: float | None = None,
+    model: str | None = None,
 ) -> SemanticCacheHit | None:
     _validate_embedding(embedding)
     threshold = (
@@ -80,10 +81,18 @@ async def find_similar_prompt_cache(
     ):
         raise ValueError("Similarity threshold must be between 0 and 1")
 
-    candidate: PromptCacheCandidate | None = await asyncio.to_thread(
-        find_nearest_prompt_cache,
-        [float(value) for value in embedding],
-    )
+    vector = [float(value) for value in embedding]
+    if model is None:
+        candidate: PromptCacheCandidate | None = await asyncio.to_thread(
+            find_nearest_prompt_cache,
+            vector,
+        )
+    else:
+        candidate = await asyncio.to_thread(
+            find_nearest_prompt_cache,
+            vector,
+            model,
+        )
     if candidate is None:
         return None
 

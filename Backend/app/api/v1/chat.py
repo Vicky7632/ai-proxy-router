@@ -18,6 +18,7 @@ from app.schemas.chat import ChatCompletionRequest
 from app.services import budget_service
 from app.services.api_key_service import get_api_key
 from app.services.rate_limiter import rate_limiter
+from app.services import semantic_cache_service
 
 router = APIRouter()
 logger = logging.getLogger(__name__)
@@ -224,6 +225,10 @@ async def chat_completions(
             )
 
             if cached_response is not None:
+                logger.info(
+                    "Cache lookup outcome=hit cache_type=redis model=%s",
+                    request.model,
+                )
                 background_tasks.add_task(
                     save_request_log,
                     api_key.id,
@@ -247,6 +252,48 @@ async def chat_completions(
                     headers=headers,
                     background=background_tasks,
                 )
+
+            logger.info(
+                "Cache lookup outcome=miss cache_type=redis model=%s",
+                request.model,
+            )
+            semantic_prompt = json.dumps(
+                [
+                    {"role": message.role, "content": message.content}
+                    for message in request.messages
+                ],
+                ensure_ascii=False,
+                separators=(",", ":"),
+            )
+            semantic_lookup = (
+                await semantic_cache_service.lookup_semantic_cache(
+                    semantic_prompt,
+                    request.model,
+                )
+            )
+            if semantic_lookup.hit is not None:
+                background_tasks.add_task(
+                    save_request_log,
+                    api_key.id,
+                    "cache",
+                    request.model,
+                    None,
+                    None,
+                    round((time.perf_counter() - started_at) * 1000),
+                    200,
+                )
+                headers = {"X-Cache": "HIT"}
+                if remaining_budget is not None:
+                    headers["X-Remaining-Budget"] = format_budget_header(
+                        remaining_budget
+                    )
+                return JSONResponse(
+                    content=semantic_lookup.hit.response,
+                    headers=headers,
+                    background=background_tasks,
+                )
+        else:
+            semantic_lookup = None
 
         # ---------- STREAMING (unchanged) ----------
         if request.stream:
@@ -281,6 +328,13 @@ async def chat_completions(
                 request=request,
                 response=response_data,
                 cache_key=cache_key,
+            )
+        if semantic_lookup is not None:
+            await semantic_cache_service.save_semantic_cache(
+                semantic_lookup,
+                response_data,
+                request.model,
+                serving_provider,
             )
 
     except HTTPException as error:
