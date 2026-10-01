@@ -102,7 +102,10 @@ async def test_repository_uses_cosine_distance_and_returns_nearest_valid_entry(
     db = FakeSession([(nearest, 0.08), (expired, 0.01), (farther, 0.2)])
     monkeypatch.setattr(prompt_cache_repository, "SessionLocal", lambda: db)
 
-    result = prompt_cache_repository.find_nearest_prompt_cache([0.0] * 768)
+    result = prompt_cache_repository.find_nearest_prompt_cache(
+        [0.0] * 768,
+        model="test-model",
+    )
 
     assert result == PromptCacheCandidate(
         id=3,
@@ -123,6 +126,7 @@ async def test_repository_uses_cosine_distance_and_returns_nearest_valid_entry(
     assert "expires_at IS NULL" in filter_sql
     assert "expires_at > now()" in filter_sql
     assert "IS NOT NULL" in filter_sql
+    assert "prompt_cache.model =" in filter_sql
     assert db.query_instance.row_limit == 1
     assert db.query_instance.first_called
     assert db.closed

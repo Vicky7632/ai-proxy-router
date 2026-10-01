@@ -49,6 +49,7 @@ def insert_prompt_cache(
 
 def find_nearest_prompt_cache(
     embedding: list[float],
+    model: str | None = None,
 ) -> PromptCacheCandidate | None:
     if not isinstance(embedding, list) or len(embedding) != 768:
         raise ValueError("Embedding must contain exactly 768 dimensions")
@@ -64,19 +65,16 @@ def find_nearest_prompt_cache(
     db = SessionLocal()
     try:
         distance = PromptCache.embedding.cosine_distance(embedding)
-        row = (
-            db.query(PromptCache, distance.label("cosine_distance"))
-            .filter(
-                or_(
-                    PromptCache.expires_at.is_(None),
-                    PromptCache.expires_at > func.now(),
-                ),
-                distance.is_not(None),
-            )
-            .order_by(distance.asc())
-            .limit(1)
-            .first()
+        query = db.query(PromptCache, distance.label("cosine_distance")).filter(
+            or_(
+                PromptCache.expires_at.is_(None),
+                PromptCache.expires_at > func.now(),
+            ),
+            distance.is_not(None),
         )
+        if model is not None:
+            query = query.filter(PromptCache.model == model)
+        row = query.order_by(distance.asc()).limit(1).first()
         if row is None:
             return None
 

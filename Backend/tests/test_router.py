@@ -305,6 +305,23 @@ async def test_non_streaming_endpoint_keeps_json_response(monkeypatch):
     monkeypatch.setattr(chat_api, "router_engine", engine)
     monkeypatch.setattr(chat_api, "save_request_log", lambda *args: None)
 
+    async def cache_miss(request, cache_key=None):
+        return None
+
+    async def save_cache(request, response, cache_key=None):
+        return None
+
+    monkeypatch.setattr(
+        chat_api.cache_service,
+        "get_cached_response",
+        cache_miss,
+    )
+    monkeypatch.setattr(
+        chat_api.cache_service,
+        "save_cached_response",
+        save_cache,
+    )
+
     async def allow_request(api_key_id):
         return 9
 
@@ -313,6 +330,11 @@ async def test_non_streaming_endpoint_keeps_json_response(monkeypatch):
         return 3.42
 
     monkeypatch.setattr(chat_api.budget_service, "check_budget", budget_left)
+    monkeypatch.setattr(
+        chat_api.semantic_cache_service,
+        "lookup_semantic_cache",
+        _semantic_miss,
+    )
     response = Response()
 
     # result = await chat_api.chat_completions(
@@ -338,6 +360,14 @@ async def test_non_streaming_endpoint_keeps_json_response(monkeypatch):
 
     body = json.loads(result.body)
     assert body == {"id": "ok"}
+
+
+async def _semantic_miss(prompt, model):
+    return chat_api.semantic_cache_service.SemanticCacheLookup(
+        prompt=prompt,
+        embedding=None,
+        hit=None,
+    )
 
 
 @pytest.mark.asyncio
