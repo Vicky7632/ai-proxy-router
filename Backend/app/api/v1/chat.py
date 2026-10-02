@@ -33,6 +33,9 @@ def save_request_log(
     completion_tokens: int | None,
     latency_ms: int,
     status: int,
+    redis_cache_status: str | None = None,
+    semantic_cache_status: str | None = None,
+    provider_called: bool | None = None,
 ) -> None:
     logger.info(
         "Request log background task started api_key_id=%s status=%s",
@@ -72,6 +75,9 @@ def save_request_log(
             output_tokens=completion_tokens or 0,
             latency_ms=latency_ms,
             status=str(status),
+            redis_cache_status=redis_cache_status,
+            semantic_cache_status=semantic_cache_status,
+            provider_called=provider_called,
         )
         db.add(request_log)
         db.flush()
@@ -122,6 +128,8 @@ async def stream_with_logging(
     background_tasks: BackgroundTasks,
     api_key_id,
     started_at: float,
+    redis_cache_status: str | None = None,
+    semantic_cache_status: str | None = None,
 ) -> AsyncIterator[bytes]:
     prompt_tokens: int | None = None
     completion_tokens: int | None = None
@@ -188,6 +196,9 @@ async def stream_with_logging(
                 completion_tokens,
                 round((time.perf_counter() - started_at) * 1000),
                 status,
+                redis_cache_status,
+                semantic_cache_status,
+                True,
             )
             if status == 200:
                 background_tasks.add_task(save_request_log, *log_args)
@@ -205,6 +216,9 @@ async def chat_completions(
     started_at = time.perf_counter()
     remaining_budget = None
     cache_key = None
+    redis_cache_status = None
+    semantic_cache_status = None
+    provider_called = False
 
     try:
         # Existing auth/rate-limit/budget flow
@@ -225,6 +239,7 @@ async def chat_completions(
             )
 
             if cached_response is not None:
+                redis_cache_status = "hit"
                 logger.info(
                     "Cache lookup outcome=hit cache_type=redis model=%s",
                     request.model,
@@ -238,6 +253,9 @@ async def chat_completions(
                     None,
                     round((time.perf_counter() - started_at) * 1000),
                     200,
+                    redis_cache_status,
+                    semantic_cache_status,
+                    provider_called,
                 )
 
                 headers = {"X-Cache": "HIT"}
@@ -257,6 +275,7 @@ async def chat_completions(
                 "Cache lookup outcome=miss cache_type=redis model=%s",
                 request.model,
             )
+            redis_cache_status = "miss"
             semantic_prompt = json.dumps(
                 [
                     {"role": message.role, "content": message.content}
@@ -271,6 +290,9 @@ async def chat_completions(
                     request.model,
                 )
             )
+            semantic_cache_status = (
+                "hit" if semantic_lookup.hit is not None else "miss"
+            )
             if semantic_lookup.hit is not None:
                 background_tasks.add_task(
                     save_request_log,
@@ -281,6 +303,9 @@ async def chat_completions(
                     None,
                     round((time.perf_counter() - started_at) * 1000),
                     200,
+                    redis_cache_status,
+                    semantic_cache_status,
+                    provider_called,
                 )
                 headers = {"X-Cache": "HIT"}
                 if remaining_budget is not None:
@@ -297,6 +322,7 @@ async def chat_completions(
 
         # ---------- STREAMING (unchanged) ----------
         if request.stream:
+            provider_called = True
             routed_stream = await router_engine.chat_completion_stream(request)
 
             headers = (
@@ -311,6 +337,8 @@ async def chat_completions(
                     background_tasks,
                     api_key.id,
                     started_at,
+                    redis_cache_status,
+                    semantic_cache_status,
                 ),
                 media_type="text/event-stream",
                 background=background_tasks,
@@ -318,6 +346,7 @@ async def chat_completions(
             )
 
         # ---------- PROVIDER CALL ----------
+        provider_called = True
         routed_completion = await router_engine.chat_completion(request)
         response_data = routed_completion.response
         serving_provider = routed_completion.provider
@@ -347,6 +376,9 @@ async def chat_completions(
             None,
             round((time.perf_counter() - started_at) * 1000),
             error.status_code,
+            redis_cache_status,
+            semantic_cache_status,
+            provider_called,
         )
         raise
 
@@ -363,6 +395,9 @@ async def chat_completions(
         usage.get("completion_tokens"),
         round((time.perf_counter() - started_at) * 1000),
         200,
+        redis_cache_status,
+        semantic_cache_status,
+        provider_called,
     )
 
     # ---------- FINAL RESPONSE ----------

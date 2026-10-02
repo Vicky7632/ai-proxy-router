@@ -223,6 +223,9 @@ async def test_stream_forwards_chunks_and_logs_usage_after_completion():
         2,
         tasks.tasks[0].args[5],
         200,
+        None,
+        None,
+        True,
     )
 
 

@@ -13,6 +13,7 @@ from fastapi import BackgroundTasks
 from starlette.responses import Response
 
 import app.api.v1.chat as chat_api
+from app.db.models.request_log import RequestLog
 from app.providers.router import RoutedCompletion
 from app.schemas.chat import ChatCompletionRequest
 from app.services import cache_service
@@ -179,7 +180,150 @@ async def test_identical_requests_share_cache_and_route_once(monkeypatch):
     hit_log_args = second_tasks.tasks[0].args
     assert hit_log_args[1] == "cache"
     assert hit_log_args[3:5] == (None, None)
-    assert hit_log_args[-1] == 200
+    assert hit_log_args[6] == 200
+    assert hit_log_args[7:] == ("hit", None, False)
+
+
+@pytest.mark.parametrize(
+    (
+        "scenario",
+        "expected_redis_status",
+        "expected_semantic_status",
+        "expected_provider_called",
+    ),
+    [
+        ("redis_hit", "hit", None, False),
+        ("semantic_hit", "miss", "hit", False),
+        ("provider", "miss", "miss", True),
+    ],
+)
+@pytest.mark.asyncio
+async def test_chat_logs_cache_analytics(
+    monkeypatch,
+    scenario,
+    expected_redis_status,
+    expected_semantic_status,
+    expected_provider_called,
+):
+    redis = FakeRedis()
+    monkeypatch.setattr(cache_service, "redis_client", redis)
+
+    class FakeEngine:
+        def __init__(self):
+            self.calls = 0
+
+        def resolve(self, model):
+            return object(), model
+
+        async def chat_completion(self, completion_request):
+            self.calls += 1
+            return RoutedCompletion(
+                response={"id": "provider-response", "choices": []},
+                provider="groq",
+            )
+
+    class FakeSession:
+        def __init__(self):
+            self.bind = None
+            self.rows = []
+
+        def query(self, model):
+            return self
+
+        def filter(self, condition):
+            return self
+
+        def first(self):
+            return SimpleNamespace(id=uuid4())
+
+        def add(self, row):
+            self.rows.append(row)
+
+        def flush(self):
+            self.rows[-1].id = uuid4()
+
+        def commit(self):
+            pass
+
+        def rollback(self):
+            pass
+
+        def close(self):
+            pass
+
+    sessions = []
+
+    def make_session():
+        session = FakeSession()
+        sessions.append(session)
+        return session
+
+    engine = FakeEngine()
+    monkeypatch.setattr(chat_api, "router_engine", engine)
+    monkeypatch.setattr(chat_api, "SessionLocal", make_session)
+
+    async def allow_rate_limit(api_key_id):
+        return 9
+
+    async def allow_budget(api_key):
+        return 3.42
+
+    semantic_calls = []
+
+    async def semantic_lookup(prompt, model):
+        semantic_calls.append((prompt, model))
+        if scenario == "semantic_hit":
+            return SimpleNamespace(
+                prompt=prompt,
+                embedding=None,
+                hit=SimpleNamespace(response={"id": "semantic-response"}),
+            )
+        return chat_api.semantic_cache_service.SemanticCacheLookup(
+            prompt=prompt,
+            embedding=None,
+            hit=None,
+        )
+
+    async def no_op_semantic_save(*args):
+        pass
+
+    monkeypatch.setattr(chat_api.rate_limiter, "check_limit", allow_rate_limit)
+    monkeypatch.setattr(chat_api.budget_service, "check_budget", allow_budget)
+    monkeypatch.setattr(
+        chat_api.semantic_cache_service,
+        "lookup_semantic_cache",
+        semantic_lookup,
+    )
+    monkeypatch.setattr(
+        chat_api.semantic_cache_service,
+        "save_semantic_cache",
+        no_op_semantic_save,
+    )
+
+    req = request(prompt=f"analytics-{scenario}")
+    if scenario == "redis_hit":
+        await cache_service.save_cached_response(
+            req,
+            {"id": "redis-response"},
+        )
+
+    tasks = BackgroundTasks()
+    result = await chat_api.chat_completions(
+        req,
+        tasks,
+        Response(),
+        SimpleNamespace(id=uuid4()),
+    )
+    await tasks()
+
+    assert result.status_code == 200
+    assert engine.calls == (1 if expected_provider_called else 0)
+    assert len(semantic_calls) == (0 if scenario == "redis_hit" else 1)
+    request_log = sessions[0].rows[0]
+    assert isinstance(request_log, RequestLog)
+    assert request_log.redis_cache_status == expected_redis_status
+    assert request_log.semantic_cache_status == expected_semantic_status
+    assert request_log.provider_called is expected_provider_called
 
 
 async def _semantic_miss(prompt, model):
