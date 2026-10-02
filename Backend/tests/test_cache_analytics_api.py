@@ -1,6 +1,7 @@
 import hashlib
 import os
 import uuid
+from datetime import datetime
 
 os.environ.setdefault("DATABASE_URL", "sqlite:///./test.db")
 os.environ.setdefault("GROQ_API_KEY", "test-groq-key")
@@ -84,11 +85,30 @@ def add_request(db, api_key_id, **analytics_fields):
     db.commit()
 
 
-def get_analytics(client, api_key):
+def get_analytics(client, api_key, params=None):
     return client.get(
         "/v1/analytics/cache",
         headers={"Authorization": f"Bearer {api_key}"},
+        params=params,
     )
+
+
+def add_time_window_requests(db, api_key_id):
+    rows = [
+        (datetime(2026, 9, 30, 23, 59), "miss", "miss", True),
+        (datetime(2026, 10, 1, 0, 0), "hit", None, False),
+        (datetime(2026, 10, 1, 12, 0), "miss", "hit", False),
+        (datetime(2026, 10, 2, 0, 0), "miss", "miss", True),
+    ]
+    for created_at, redis_status, semantic_status, provider_called in rows:
+        add_request(
+            db,
+            api_key_id,
+            created_at=created_at,
+            redis_cache_status=redis_status,
+            semantic_cache_status=semantic_status,
+            provider_called=provider_called,
+        )
 
 
 def test_empty_request_logs_return_zero_counts_and_rate(analytics_client):
@@ -213,3 +233,104 @@ def test_cache_analytics_requires_api_key(analytics_client):
     response = client.get("/v1/analytics/cache")
 
     assert response.status_code == 401
+
+
+def test_cache_analytics_from_only_is_inclusive(analytics_client):
+    client, db, raw_api_key, api_key_id = analytics_client
+    add_time_window_requests(db, api_key_id)
+
+    response = get_analytics(
+        client,
+        raw_api_key,
+        params={"from": "2026-10-01T00:00:00Z"},
+    )
+
+    assert response.status_code == 200
+    assert response.json()["total_requests"] == 3
+    assert response.json()["redis_hits"] == 1
+
+
+def test_cache_analytics_to_only_is_exclusive(analytics_client):
+    client, db, raw_api_key, api_key_id = analytics_client
+    add_time_window_requests(db, api_key_id)
+
+    response = get_analytics(
+        client,
+        raw_api_key,
+        params={"to": "2026-10-02T00:00:00Z"},
+    )
+
+    assert response.status_code == 200
+    assert response.json()["total_requests"] == 3
+    assert response.json()["provider_calls"] == 1
+
+
+def test_cache_analytics_from_and_to_filter_both_bounds(analytics_client):
+    client, db, raw_api_key, api_key_id = analytics_client
+    add_time_window_requests(db, api_key_id)
+
+    response = get_analytics(
+        client,
+        raw_api_key,
+        params={
+            "from": "2026-10-01T00:00:00Z",
+            "to": "2026-10-02T00:00:00Z",
+        },
+    )
+
+    assert response.status_code == 200
+    assert response.json()["total_requests"] == 2
+    assert response.json()["cache_hits"] == 2
+    assert response.json()["cache_hit_rate"] == 100.0
+
+
+def test_cache_analytics_empty_time_window_returns_zeroes(analytics_client):
+    client, db, raw_api_key, api_key_id = analytics_client
+    add_time_window_requests(db, api_key_id)
+
+    response = get_analytics(
+        client,
+        raw_api_key,
+        params={
+            "from": "2026-10-03T00:00:00Z",
+            "to": "2026-10-04T00:00:00Z",
+        },
+    )
+
+    assert response.status_code == 200
+    assert response.json()["total_requests"] == 0
+    assert response.json()["cache_hit_rate"] == 0.0
+
+
+def test_cache_analytics_rejects_from_at_or_after_to(analytics_client):
+    client, _, raw_api_key, _ = analytics_client
+
+    response = get_analytics(
+        client,
+        raw_api_key,
+        params={
+            "from": "2026-10-02T00:00:00Z",
+            "to": "2026-10-02T00:00:00Z",
+        },
+    )
+
+    assert response.status_code == 400
+    assert response.json()["detail"] == "'from' must be earlier than 'to'"
+
+
+def test_cache_analytics_normalizes_timezone_aware_timestamps(analytics_client):
+    client, db, raw_api_key, api_key_id = analytics_client
+    add_time_window_requests(db, api_key_id)
+
+    response = get_analytics(
+        client,
+        raw_api_key,
+        params={
+            "from": "2026-10-01T02:00:00+02:00",
+            "to": "2026-10-01T14:00:00+02:00",
+        },
+    )
+
+    assert response.status_code == 200
+    assert response.json()["total_requests"] == 1
+    assert response.json()["redis_hits"] == 1

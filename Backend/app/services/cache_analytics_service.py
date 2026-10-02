@@ -1,4 +1,5 @@
 from dataclasses import dataclass
+from datetime import datetime, timezone
 
 from sqlalchemy.orm import Session
 
@@ -19,7 +20,11 @@ class CacheAnalytics:
     cache_hit_rate: float
 
 
-def get_cache_analytics(db: Session) -> CacheAnalytics:
+def get_cache_analytics(
+    db: Session,
+    from_datetime: datetime | None = None,
+    to_datetime: datetime | None = None,
+) -> CacheAnalytics:
     (
         total_requests,
         redis_hits,
@@ -27,7 +32,11 @@ def get_cache_analytics(db: Session) -> CacheAnalytics:
         semantic_hits,
         semantic_misses,
         provider_calls,
-    ) = get_cache_analytics_counts(db)
+    ) = get_cache_analytics_counts(
+        db,
+        from_datetime=normalize_utc_datetime(from_datetime),
+        to_datetime=normalize_utc_datetime(to_datetime),
+    )
     cache_hits = redis_hits + semantic_hits
     cache_hit_rate = (
         cache_hits / total_requests * 100 if total_requests else 0.0
@@ -43,3 +52,11 @@ def get_cache_analytics(db: Session) -> CacheAnalytics:
         cache_hits=cache_hits,
         cache_hit_rate=cache_hit_rate,
     )
+
+
+def normalize_utc_datetime(value: datetime | None) -> datetime | None:
+    if value is None:
+        return None
+    if value.tzinfo is None:
+        return value.replace(tzinfo=timezone.utc)
+    return value.astimezone(timezone.utc)
