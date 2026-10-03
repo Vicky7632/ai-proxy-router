@@ -1,5 +1,5 @@
 import os
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 
 os.environ.setdefault("DATABASE_URL", "sqlite:///./test.db")
 os.environ.setdefault("GROQ_API_KEY", "test-groq-key")
@@ -66,9 +66,15 @@ async def test_save_prompt_cache_persists_entry(monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_save_prompt_cache_supports_optional_provider_and_expiry(monkeypatch):
+async def test_save_prompt_cache_defaults_expiry_from_configured_ttl(monkeypatch):
     db = FakeSession()
     monkeypatch.setattr(prompt_cache_repository, "SessionLocal", lambda: db)
+    monkeypatch.setattr(
+        prompt_cache_service.settings,
+        "semantic_cache_ttl_seconds",
+        120,
+    )
+    started_at = datetime.now(timezone.utc)
 
     await prompt_cache_service.save_prompt_cache(
         prompt="hello",
@@ -77,9 +83,12 @@ async def test_save_prompt_cache_supports_optional_provider_and_expiry(monkeypat
         model="test-model",
     )
 
+    finished_at = datetime.now(timezone.utc)
     entry = db.added[0]
     assert entry.provider is None
-    assert entry.expires_at is None
+    assert entry.expires_at is not None
+    assert started_at + timedelta(seconds=120) <= entry.expires_at
+    assert entry.expires_at <= finished_at + timedelta(seconds=120)
     assert db.committed
 
 

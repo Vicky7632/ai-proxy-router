@@ -1,7 +1,7 @@
 import asyncio
 import math
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import datetime, timedelta, timezone
 from typing import Any
 
 from app.config import settings
@@ -40,6 +40,11 @@ async def save_prompt_cache(
         raise ValueError("Response must be a dictionary")
     if not isinstance(model, str) or not model:
         raise ValueError("Model must not be empty")
+
+    if expires_at is None:
+        expires_at = datetime.now(timezone.utc) + timedelta(
+            seconds=settings.semantic_cache_ttl_seconds
+        )
 
     await asyncio.to_thread(
         insert_prompt_cache,

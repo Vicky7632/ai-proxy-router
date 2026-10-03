@@ -1,6 +1,6 @@
 from pathlib import Path
 
-from pydantic import Field
+from pydantic import Field, field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 class Settings(BaseSettings):
@@ -13,6 +13,8 @@ class Settings(BaseSettings):
         ge=0.0,
         le=1.0,
     )
+    semantic_cache_ttl_seconds: int = Field(default=3600, gt=0)
+    semantic_cache_cleanup_interval_seconds: int = Field(default=3600, gt=0)
     redis_url: str | None = None
     redis_host: str = "localhost"
     redis_port: int = 6379
@@ -27,6 +29,13 @@ class Settings(BaseSettings):
     cookie_secure: bool = False
     cookie_samesite: str = "lax"
     frontend_origin: str = "http://localhost:3000"
+
+    @field_validator("semantic_cache_cleanup_interval_seconds", mode="before")
+    @classmethod
+    def validate_semantic_cache_cleanup_interval(cls, value):
+        if isinstance(value, bool):
+            raise ValueError("Semantic cache cleanup interval must be a positive integer")
+        return value
 
     model_config = SettingsConfigDict(
         env_file=Path(__file__).resolve().parents[1] / ".env",

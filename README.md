@@ -31,6 +31,8 @@ GROQ_API_KEY=your-groq-api-key
 JWT_SECRET_KEY=replace-with-a-random-secret-at-least-32-characters
 ACCESS_TOKEN_EXPIRE_MINUTES=15
 REFRESH_TOKEN_EXPIRE_DAYS=7
+SEMANTIC_CACHE_TTL_SECONDS=3600
+SEMANTIC_CACHE_CLEANUP_INTERVAL_SECONDS=3600
 
 # Redis Cloud
 REDIS_HOST=redis-12967.c83.us-east-1-2.ec2.cloud.redislabs.com

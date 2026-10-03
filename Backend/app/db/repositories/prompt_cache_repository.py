@@ -1,5 +1,5 @@
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import datetime, timezone
 import math
 from typing import Any
 
@@ -40,6 +40,26 @@ def insert_prompt_cache(
             )
         )
         db.commit()
+    except Exception:
+        db.rollback()
+        raise
+    finally:
+        db.close()
+
+
+def delete_expired_prompt_cache() -> int:
+    db = SessionLocal()
+    try:
+        deleted_count = (
+            db.query(PromptCache)
+            .filter(
+                PromptCache.expires_at.is_not(None),
+                PromptCache.expires_at <= datetime.now(timezone.utc),
+            )
+            .delete(synchronize_session=False)
+        )
+        db.commit()
+        return deleted_count
     except Exception:
         db.rollback()
         raise
