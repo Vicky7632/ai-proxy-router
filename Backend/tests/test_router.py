@@ -83,12 +83,25 @@ class FakeProvider:
         return ProviderStream(chunks=chunks(), close=close)
 
 
+class FakeProviderHealthService:
+    def __init__(self):
+        self.events = []
+
+    async def record_success(self, provider_name):
+        self.events.append(("success", provider_name))
+
+    async def record_failure(self, provider_name):
+        self.events.append(("failure", provider_name))
+
+
 @pytest.mark.asyncio
 async def test_fallback_from_groq_to_gemini():
     groq = FakeProvider(error=HTTPException(status_code=503, detail="down"))
     gemini = FakeProvider(response={"id": "gemini"})
+    health_service = FakeProviderHealthService()
     engine = RouterEngine(
-        {"groq": groq, "gemini": gemini, "openrouter": FakeProvider()}
+        {"groq": groq, "gemini": gemini, "openrouter": FakeProvider()},
+        health_service=health_service,
     )
 
     result = await engine.chat_completion(request("auto"))
@@ -97,18 +110,40 @@ async def test_fallback_from_groq_to_gemini():
     assert result.provider == "gemini"
     assert groq.models == ["openai/gpt-oss-20b"]
     assert gemini.models == ["gemini-3.6-flash"]
+    assert health_service.events == [
+        ("failure", "groq"),
+        ("success", "gemini"),
+    ]
+
+
+@pytest.mark.asyncio
+async def test_successful_primary_provider_records_success():
+    groq = FakeProvider(response={"id": "groq"})
+    health_service = FakeProviderHealthService()
+    engine = RouterEngine(
+        {"groq": groq, "gemini": FakeProvider(), "openrouter": FakeProvider()},
+        health_service=health_service,
+    )
+
+    result = await engine.chat_completion(request("auto"))
+
+    assert result.response == {"id": "groq"}
+    assert result.provider == "groq"
+    assert health_service.events == [("success", "groq")]
 
 
 @pytest.mark.asyncio
 async def test_fallback_from_gemini_to_openrouter():
     gemini = FakeProvider(error=HTTPException(status_code=500, detail="down"))
     openrouter = FakeProvider(response={"id": "openrouter"})
+    health_service = FakeProviderHealthService()
     engine = RouterEngine(
         {
             "groq": FakeProvider(),
             "gemini": gemini,
             "openrouter": openrouter,
-        }
+        },
+        health_service=health_service,
     )
 
     result = await engine.chat_completion(request("gemini-3.6-flash"))
@@ -116,14 +151,20 @@ async def test_fallback_from_gemini_to_openrouter():
     assert result.response == {"id": "openrouter"}
     assert result.provider == "openrouter"
     assert openrouter.models == ["qwen/qwen-2.5-72b-instruct"]
+    assert health_service.events == [
+        ("failure", "gemini"),
+        ("success", "openrouter"),
+    ]
 
 
 @pytest.mark.asyncio
 async def test_client_errors_do_not_fallback():
     groq = FakeProvider(error=HTTPException(status_code=401, detail="invalid"))
     gemini = FakeProvider()
+    health_service = FakeProviderHealthService()
     engine = RouterEngine(
-        {"groq": groq, "gemini": gemini, "openrouter": FakeProvider()}
+        {"groq": groq, "gemini": gemini, "openrouter": FakeProvider()},
+        health_service=health_service,
     )
 
     with pytest.raises(HTTPException) as error:
@@ -131,14 +172,17 @@ async def test_client_errors_do_not_fallback():
 
     assert error.value.status_code == 401
     assert gemini.models == []
+    assert health_service.events == [("failure", "groq")]
 
 
 @pytest.mark.asyncio
 async def test_stream_falls_back_before_streaming_starts():
     groq = FakeProvider(stream_error=HTTPException(status_code=503, detail="down"))
     gemini = FakeProvider()
+    health_service = FakeProviderHealthService()
     engine = RouterEngine(
-        {"groq": groq, "gemini": gemini, "openrouter": FakeProvider()}
+        {"groq": groq, "gemini": gemini, "openrouter": FakeProvider()},
+        health_service=health_service,
     )
 
     result = await engine.chat_completion_stream(
@@ -149,17 +193,23 @@ async def test_stream_falls_back_before_streaming_starts():
     assert result.model == "gemini-3.6-flash"
     assert groq.stream_requests[0].stream is True
     assert gemini.stream_requests[0].model == "gemini-3.6-flash"
+    assert health_service.events == [
+        ("failure", "groq"),
+        ("success", "gemini"),
+    ]
 
 
 @pytest.mark.asyncio
 async def test_openrouter_stream_uses_requested_model():
     openrouter = FakeProvider()
+    health_service = FakeProviderHealthService()
     engine = RouterEngine(
         {
             "groq": FakeProvider(),
             "gemini": FakeProvider(),
             "openrouter": openrouter,
-        }
+        },
+        health_service=health_service,
     )
 
     result = await engine.chat_completion_stream(
@@ -169,13 +219,16 @@ async def test_openrouter_stream_uses_requested_model():
     assert result.provider == "openrouter"
     assert result.model == "google/gemma-3-27b-it:free"
     assert openrouter.stream_requests[0].stream is True
+    assert health_service.events == [("success", "openrouter")]
 
 
 @pytest.mark.asyncio
 async def test_auto_stream_resolves_model_before_provider_call():
     groq = FakeProvider()
+    health_service = FakeProviderHealthService()
     engine = RouterEngine(
-        {"groq": groq, "gemini": FakeProvider(), "openrouter": FakeProvider()}
+        {"groq": groq, "gemini": FakeProvider(), "openrouter": FakeProvider()},
+        health_service=health_service,
     )
 
     result = await engine.chat_completion_stream(request("auto"))
@@ -183,6 +236,7 @@ async def test_auto_stream_resolves_model_before_provider_call():
     assert result.provider == "groq"
     assert result.model == "openai/gpt-oss-20b"
     assert groq.stream_requests[0].model == "openai/gpt-oss-20b"
+    assert health_service.events == [("success", "groq")]
 
 
 @pytest.mark.asyncio
@@ -302,8 +356,14 @@ async def test_provider_stream_opens_sse_without_buffering(
 
 @pytest.mark.asyncio
 async def test_non_streaming_endpoint_keeps_json_response(monkeypatch):
+    health_service = FakeProviderHealthService()
     engine = RouterEngine(
-        {"groq": FakeProvider(), "gemini": FakeProvider(), "openrouter": FakeProvider()}
+        {
+            "groq": FakeProvider(),
+            "gemini": FakeProvider(),
+            "openrouter": FakeProvider(),
+        },
+        health_service=health_service,
     )
     monkeypatch.setattr(chat_api, "router_engine", engine)
     monkeypatch.setattr(chat_api, "save_request_log", lambda *args: None)
@@ -375,8 +435,14 @@ async def _semantic_miss(prompt, model):
 
 @pytest.mark.asyncio
 async def test_streaming_endpoint_returns_sse_response(monkeypatch):
+    health_service = FakeProviderHealthService()
     engine = RouterEngine(
-        {"groq": FakeProvider(), "gemini": FakeProvider(), "openrouter": FakeProvider()}
+        {
+            "groq": FakeProvider(),
+            "gemini": FakeProvider(),
+            "openrouter": FakeProvider(),
+        },
+        health_service=health_service,
     )
     monkeypatch.setattr(chat_api, "router_engine", engine)
     monkeypatch.setattr(chat_api, "save_request_log", lambda *args: None)

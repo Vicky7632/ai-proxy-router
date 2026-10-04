@@ -1,4 +1,5 @@
 from dataclasses import dataclass
+import logging
 from typing import Any
 
 from fastapi import HTTPException
@@ -9,7 +10,12 @@ from app.providers.gemini import GeminiProvider
 from app.providers.groq import GroqProvider
 from app.providers.openrouter import OpenRouterProvider
 from app.schemas.chat import ChatCompletionRequest
+from app.services.provider_health_service import (
+    ProviderHealthService,
+    provider_health_service,
+)
 
+logger = logging.getLogger(__name__)
 
 MODEL_PROVIDERS = {
     "openai/gpt-oss-20b": "groq",
@@ -45,12 +51,14 @@ class RouterEngine:
     def __init__(
         self,
         providers: dict[str, ProviderAdapter] | None = None,
+        health_service: ProviderHealthService | None = None,
     ) -> None:
         self.providers = providers or {
             "groq": GroqProvider(),
             "gemini": GeminiProvider(),
             "openrouter": OpenRouterProvider(),
         }
+        self.health_service = health_service or provider_health_service
 
     def provider_name(self, model: str) -> str:
         if model == "auto":
@@ -96,8 +104,10 @@ class RouterEngine:
             )
             try:
                 response = await provider.chat_completion(provider_request)
+                await self._record_provider_health(provider_name, success=True)
                 return RoutedCompletion(response=response, provider=provider_name)
             except (HTTPException, httpx.TimeoutException, httpx.RequestError) as error:
+                await self._record_provider_health(provider_name, success=False)
                 if not self._is_retryable(error):
                     raise
                 last_error = self._as_http_exception(error)
@@ -126,12 +136,14 @@ class RouterEngine:
             )
             try:
                 stream = await provider.chat_completion_stream(provider_request)
+                await self._record_provider_health(provider_name, success=True)
                 return RoutedStream(
                     stream=stream,
                     provider=provider_name,
                     model=resolved_model,
                 )
             except (HTTPException, httpx.TimeoutException, httpx.RequestError) as error:
+                await self._record_provider_health(provider_name, success=False)
                 if not self._is_retryable(error):
                     raise
                 last_error = self._as_http_exception(error)
@@ -139,6 +151,24 @@ class RouterEngine:
         if last_error is not None:
             raise last_error
         raise HTTPException(status_code=502, detail="All providers failed")
+
+    async def _record_provider_health(
+        self,
+        provider_name: str,
+        *,
+        success: bool,
+    ) -> None:
+        try:
+            if success:
+                await self.health_service.record_success(provider_name)
+            else:
+                await self.health_service.record_failure(provider_name)
+        except RuntimeError:
+            logger.exception(
+                "Provider health update failed provider=%s success=%s",
+                provider_name,
+                success,
+            )
 
     @staticmethod
     def _is_retryable(error: Exception) -> bool:
