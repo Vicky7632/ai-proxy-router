@@ -6,6 +6,7 @@ from fastapi.middleware.cors import CORSMiddleware
 
 from app.api.v1.analytics import router as analytics_router
 from app.api.v1.chat import router as chat_router
+from app.api.v1.providers import router as providers_router
 from app.config import settings
 from app.routes.auth import router as auth_router
 from app.routes.keys import router as keys_router
@@ -44,6 +45,7 @@ app.include_router(auth_router)
 app.include_router(keys_router)
 app.include_router(chat_router)
 app.include_router(analytics_router)
+app.include_router(providers_router)
 
 @app.get("/")
 def root():
