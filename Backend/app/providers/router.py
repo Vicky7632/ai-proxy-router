@@ -92,13 +92,30 @@ class RouterEngine:
             initial_provider,
         )
         last_error: HTTPException | None = None
+        attempted_count = 0
+        pending_fallback: tuple[str, str] | None = None
 
         for provider_name in providers_to_try:
             if (
                 request.model != "auto"
                 and not await self._is_provider_healthy(provider_name)
             ):
+                logger.warning(
+                    "Provider routing event=provider_skipped provider=%s "
+                    "reason=unhealthy_cooldown routing_mode=explicit",
+                    provider_name,
+                )
                 continue
+            if pending_fallback is not None:
+                failed_provider, error_category = pending_fallback
+                logger.info(
+                    "Provider routing event=provider_fallback "
+                    "failed_provider=%s error_category=%s next_provider=%s",
+                    failed_provider,
+                    error_category,
+                    provider_name,
+                )
+                pending_fallback = None
             provider = self.providers[provider_name]
             resolved_model = (
                 PROVIDER_MODELS[provider_name]
@@ -109,18 +126,56 @@ class RouterEngine:
             provider_request = request.model_copy(
                 update={"model": resolved_model}
             )
+            attempt_type = "initial" if attempted_count == 0 else "fallback"
+            attempted_count += 1
+            logger.info(
+                "Provider routing event=provider_attempt provider=%s "
+                "resolved_model=%s attempt_type=%s routing_mode=%s",
+                provider_name,
+                resolved_model,
+                attempt_type,
+                "auto" if request.model == "auto" else "explicit",
+            )
             try:
                 response = await provider.chat_completion(provider_request)
                 await self._record_provider_health(provider_name, success=True)
+                logger.info(
+                    "Provider routing event=provider_success provider=%s "
+                    "resolved_model=%s attempt_type=%s routing_mode=%s",
+                    provider_name,
+                    resolved_model,
+                    attempt_type,
+                    "auto" if request.model == "auto" else "explicit",
+                )
                 return RoutedCompletion(response=response, provider=provider_name)
             except (HTTPException, httpx.TimeoutException, httpx.RequestError) as error:
                 await self._record_provider_health(provider_name, success=False)
                 if not self._is_retryable(error):
+                    logger.error(
+                        "Provider routing event=routing_failed provider=%s "
+                        "reason=non_retryable error_category=%s",
+                        provider_name,
+                        self._error_category(error),
+                    )
                     raise
                 last_error = self._as_http_exception(error)
+                pending_fallback = (
+                    provider_name,
+                    self._error_category(error),
+                )
 
         if last_error is not None:
+            logger.error(
+                "Provider routing event=routing_failed "
+                "reason=all_candidates_failed error_category=%s",
+                self._error_category(last_error),
+            )
             raise last_error
+        logger.error(
+            "Provider routing event=routing_failed "
+            "reason=no_healthy_providers routing_mode=%s",
+            "auto" if request.model == "auto" else "explicit",
+        )
         raise HTTPException(status_code=502, detail="All providers failed")
 
     async def chat_completion_stream(
@@ -132,13 +187,31 @@ class RouterEngine:
             initial_provider,
         )
         last_error: HTTPException | None = None
+        attempted_count = 0
+        pending_fallback: tuple[str, str] | None = None
 
         for provider_name in providers_to_try:
             if (
                 request.model != "auto"
                 and not await self._is_provider_healthy(provider_name)
             ):
+                logger.warning(
+                    "Provider routing event=provider_skipped provider=%s "
+                    "reason=unhealthy_cooldown routing_mode=explicit stream=true",
+                    provider_name,
+                )
                 continue
+            if pending_fallback is not None:
+                failed_provider, error_category = pending_fallback
+                logger.info(
+                    "Provider routing event=provider_fallback "
+                    "failed_provider=%s error_category=%s next_provider=%s "
+                    "stream=true",
+                    failed_provider,
+                    error_category,
+                    provider_name,
+                )
+                pending_fallback = None
             provider = self.providers[provider_name]
             resolved_model = (
                 PROVIDER_MODELS[provider_name]
@@ -148,9 +221,27 @@ class RouterEngine:
             provider_request = request.model_copy(
                 update={"model": resolved_model, "stream": True}
             )
+            attempt_type = "initial" if attempted_count == 0 else "fallback"
+            attempted_count += 1
+            logger.info(
+                "Provider routing event=provider_attempt provider=%s "
+                "resolved_model=%s attempt_type=%s routing_mode=%s stream=true",
+                provider_name,
+                resolved_model,
+                attempt_type,
+                "auto" if request.model == "auto" else "explicit",
+            )
             try:
                 stream = await provider.chat_completion_stream(provider_request)
                 await self._record_provider_health(provider_name, success=True)
+                logger.info(
+                    "Provider routing event=provider_success provider=%s "
+                    "resolved_model=%s attempt_type=%s routing_mode=%s stream=true",
+                    provider_name,
+                    resolved_model,
+                    attempt_type,
+                    "auto" if request.model == "auto" else "explicit",
+                )
                 return RoutedStream(
                     stream=stream,
                     provider=provider_name,
@@ -159,11 +250,31 @@ class RouterEngine:
             except (HTTPException, httpx.TimeoutException, httpx.RequestError) as error:
                 await self._record_provider_health(provider_name, success=False)
                 if not self._is_retryable(error):
+                    logger.error(
+                        "Provider routing event=routing_failed provider=%s "
+                        "reason=non_retryable error_category=%s stream=true",
+                        provider_name,
+                        self._error_category(error),
+                    )
                     raise
                 last_error = self._as_http_exception(error)
+                pending_fallback = (
+                    provider_name,
+                    self._error_category(error),
+                )
 
         if last_error is not None:
+            logger.error(
+                "Provider routing event=routing_failed "
+                "reason=all_candidates_failed error_category=%s stream=true",
+                self._error_category(last_error),
+            )
             raise last_error
+        logger.error(
+            "Provider routing event=routing_failed "
+            "reason=no_healthy_providers routing_mode=%s stream=true",
+            "auto" if request.model == "auto" else "explicit",
+        )
         raise HTTPException(status_code=502, detail="All providers failed")
 
     async def _providers_to_try(
@@ -178,6 +289,11 @@ class RouterEngine:
         ranked_providers = []
         for order, provider_name in enumerate(PROVIDER_ORDER):
             if not await self._is_provider_healthy(provider_name):
+                logger.warning(
+                    "Provider routing event=provider_skipped provider=%s "
+                    "reason=unhealthy_cooldown routing_mode=auto",
+                    provider_name,
+                )
                 continue
             try:
                 health = await self.health_service.get_health(provider_name)
@@ -194,6 +310,23 @@ class RouterEngine:
             )
 
         ranked_providers.sort()
+        if ranked_providers:
+            selected_failures, _, selected_provider = ranked_providers[0]
+            logger.info(
+                "Provider routing event=auto_selection routing_mode=auto "
+                "selected_provider=%s consecutive_failures=%s candidates=%s",
+                selected_provider,
+                selected_failures,
+                [
+                    (provider_name, failures)
+                    for failures, _, provider_name in ranked_providers
+                ],
+            )
+        else:
+            logger.info(
+                "Provider routing event=auto_selection routing_mode=auto "
+                "selected_provider=none candidates=[]"
+            )
         return tuple(provider_name for _, _, provider_name in ranked_providers)
 
     async def _is_provider_healthy(self, provider_name: str) -> bool:
@@ -235,3 +368,17 @@ class RouterEngine:
         if isinstance(error, HTTPException):
             return error
         return HTTPException(status_code=502, detail=f"Provider request failed: {error}")
+
+    @staticmethod
+    def _error_category(error: Exception) -> str:
+        if isinstance(error, HTTPException):
+            if error.status_code == 429:
+                return "http_429"
+            if error.status_code >= 500:
+                return "http_5xx"
+            return "http_non_retryable"
+        if isinstance(error, httpx.TimeoutException):
+            return "timeout"
+        if isinstance(error, httpx.RequestError):
+            return "request_error"
+        return "unknown"

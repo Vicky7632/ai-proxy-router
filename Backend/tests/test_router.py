@@ -114,7 +114,8 @@ class FakeProviderHealthService:
 
 
 @pytest.mark.asyncio
-async def test_fallback_from_groq_to_gemini():
+async def test_fallback_from_groq_to_gemini(caplog):
+    caplog.set_level("INFO")
     groq = FakeProvider(error=HTTPException(status_code=503, detail="down"))
     gemini = FakeProvider(response={"id": "gemini"})
     health_service = FakeProviderHealthService()
@@ -133,10 +134,19 @@ async def test_fallback_from_groq_to_gemini():
         ("failure", "groq"),
         ("success", "gemini"),
     ]
+    assert (
+        "event=provider_fallback failed_provider=groq error_category=http_5xx "
+        "next_provider=gemini"
+    ) in caplog.text
+    assert (
+        "event=provider_success provider=gemini "
+        "resolved_model=gemini-3.6-flash attempt_type=fallback"
+    ) in caplog.text
 
 
 @pytest.mark.asyncio
-async def test_successful_primary_provider_records_success():
+async def test_successful_primary_provider_records_success(caplog):
+    caplog.set_level("INFO")
     groq = FakeProvider(response={"id": "groq"})
     health_service = FakeProviderHealthService()
     engine = RouterEngine(
@@ -149,10 +159,17 @@ async def test_successful_primary_provider_records_success():
     assert result.response == {"id": "groq"}
     assert result.provider == "groq"
     assert health_service.events == [("success", "groq")]
+    assert (
+        "event=provider_success provider=groq "
+        "resolved_model=openai/gpt-oss-20b attempt_type=initial"
+    ) in caplog.text
 
 
 @pytest.mark.asyncio
-async def test_auto_selects_healthy_provider_with_fewest_consecutive_failures():
+async def test_auto_selects_healthy_provider_with_fewest_consecutive_failures(
+    caplog,
+):
+    caplog.set_level("INFO")
     groq = FakeProvider()
     gemini = FakeProvider(response={"id": "gemini"})
     health_service = FakeProviderHealthService(
@@ -170,6 +187,10 @@ async def test_auto_selects_healthy_provider_with_fewest_consecutive_failures():
     assert gemini.models == ["gemini-3.6-flash"]
     assert health_service.checks == ["groq", "gemini", "openrouter"]
     assert health_service.events == [("success", "gemini")]
+    assert (
+        "event=auto_selection routing_mode=auto selected_provider=gemini "
+        "consecutive_failures=1"
+    ) in caplog.text
 
 
 @pytest.mark.asyncio
@@ -191,7 +212,10 @@ async def test_auto_selection_tie_uses_provider_order():
 
 
 @pytest.mark.asyncio
-async def test_unhealthy_primary_provider_is_skipped_without_recording_failure():
+async def test_unhealthy_primary_provider_is_skipped_without_recording_failure(
+    caplog,
+):
+    caplog.set_level("WARNING")
     groq = FakeProvider()
     gemini = FakeProvider(response={"id": "gemini"})
     health_service = FakeProviderHealthService(unhealthy={"groq"})
@@ -207,10 +231,15 @@ async def test_unhealthy_primary_provider_is_skipped_without_recording_failure()
     assert gemini.models == ["gemini-3.6-flash"]
     assert health_service.checks == ["groq", "gemini", "openrouter"]
     assert health_service.events == [("success", "gemini")]
+    assert (
+        "event=provider_skipped provider=groq "
+        "reason=unhealthy_cooldown routing_mode=auto"
+    ) in caplog.text
 
 
 @pytest.mark.asyncio
-async def test_all_unhealthy_providers_return_existing_failure():
+async def test_all_unhealthy_providers_return_existing_failure(caplog):
+    caplog.set_level("ERROR")
     groq = FakeProvider()
     gemini = FakeProvider()
     openrouter = FakeProvider()
@@ -230,6 +259,7 @@ async def test_all_unhealthy_providers_return_existing_failure():
     assert groq.models == gemini.models == openrouter.models == []
     assert health_service.checks == ["groq", "gemini", "openrouter"]
     assert health_service.events == []
+    assert "event=routing_failed reason=no_healthy_providers" in caplog.text
 
 
 @pytest.mark.asyncio
@@ -398,7 +428,8 @@ async def test_unhealthy_provider_is_skipped_before_stream_request():
 
 
 @pytest.mark.asyncio
-async def test_auto_stream_uses_lowest_failure_provider_selection():
+async def test_auto_stream_uses_lowest_failure_provider_selection(caplog):
+    caplog.set_level("INFO")
     groq = FakeProvider()
     gemini = FakeProvider()
     openrouter = FakeProvider()
@@ -417,6 +448,20 @@ async def test_auto_stream_uses_lowest_failure_provider_selection():
     assert gemini.stream_requests == []
     assert openrouter.stream_requests[0].model == "qwen/qwen-2.5-72b-instruct"
     assert health_service.events == [("success", "openrouter")]
+    assert (
+        "event=auto_selection routing_mode=auto selected_provider=openrouter "
+        "consecutive_failures=0"
+    ) in caplog.text
+    assert (
+        "event=provider_attempt provider=openrouter "
+        "resolved_model=qwen/qwen-2.5-72b-instruct "
+        "attempt_type=initial routing_mode=auto stream=true"
+    ) in caplog.text
+    assert (
+        "event=provider_success provider=openrouter "
+        "resolved_model=qwen/qwen-2.5-72b-instruct "
+        "attempt_type=initial routing_mode=auto stream=true"
+    ) in caplog.text
 
 
 @pytest.mark.asyncio
