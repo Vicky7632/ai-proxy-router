@@ -1,5 +1,5 @@
 import os
-from datetime import timezone
+from datetime import datetime, timedelta, timezone
 
 os.environ.setdefault("DATABASE_URL", "sqlite:///./test.db")
 os.environ.setdefault("GROQ_API_KEY", "test-groq-key")
@@ -7,6 +7,7 @@ os.environ.setdefault("JWT_SECRET_KEY", "test-secret")
 
 import pytest
 
+from app.config import settings
 from app.services.provider_health_service import (
     PROVIDER_HEALTH_KEY_PREFIX,
     ProviderHealth,
@@ -133,3 +134,80 @@ async def test_provider_health_is_isolated():
     assert set(all_health) == {"groq", "gemini"}
     assert all_health["groq"] == groq_health
     assert all_health["gemini"] == gemini_health
+
+
+@pytest.mark.asyncio
+async def test_provider_with_no_recorded_failures_is_healthy():
+    service = ProviderHealthService(redis=FakeRedis())
+
+    assert await service.is_provider_healthy("groq") is True
+
+
+@pytest.mark.asyncio
+async def test_failures_below_threshold_are_healthy(monkeypatch):
+    monkeypatch.setattr(settings, "provider_health_failure_threshold", 3)
+    service = ProviderHealthService(redis=FakeRedis())
+    await service.record_failure("groq")
+    await service.record_failure("groq")
+
+    assert await service.is_provider_healthy("groq") is True
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("consecutive_failures", [3, 5])
+async def test_threshold_failures_inside_cooldown_are_unhealthy(
+    monkeypatch, consecutive_failures
+):
+    monkeypatch.setattr(settings, "provider_health_failure_threshold", 3)
+    monkeypatch.setattr(settings, "provider_health_cooldown_seconds", 60)
+    now = datetime(2026, 10, 5, 10, 0, tzinfo=timezone.utc)
+
+    class FrozenDateTime(datetime):
+        @classmethod
+        def now(cls, tz=None):
+            return now
+
+    monkeypatch.setattr(
+        "app.services.provider_health_service.datetime",
+        FrozenDateTime,
+    )
+    redis = FakeRedis()
+    redis.hashes[f"{PROVIDER_HEALTH_KEY_PREFIX}groq"] = {
+        "consecutive_failures": str(consecutive_failures),
+        "last_failure_at": (now - timedelta(seconds=30)).isoformat(),
+    }
+    service = ProviderHealthService(redis=redis)
+
+    assert await service.is_provider_healthy("groq") is False
+
+
+@pytest.mark.asyncio
+async def test_cooldown_expiration_makes_provider_healthy(monkeypatch):
+    monkeypatch.setattr(settings, "provider_health_failure_threshold", 3)
+    monkeypatch.setattr(settings, "provider_health_cooldown_seconds", 60)
+    now = datetime(2026, 10, 5, 10, 0, tzinfo=timezone.utc)
+
+    class FrozenDateTime(datetime):
+        @classmethod
+        def now(cls, tz=None):
+            return now
+
+    monkeypatch.setattr(
+        "app.services.provider_health_service.datetime",
+        FrozenDateTime,
+    )
+    redis = FakeRedis()
+    redis.hashes[f"{PROVIDER_HEALTH_KEY_PREFIX}groq"] = {
+        "consecutive_failures": "3",
+        "last_failure_at": (now - timedelta(seconds=60)).isoformat(),
+    }
+    service = ProviderHealthService(redis=redis)
+
+    assert await service.is_provider_healthy("groq") is True
+
+
+@pytest.mark.asyncio
+async def test_missing_provider_health_is_healthy():
+    service = ProviderHealthService(redis=FakeRedis())
+
+    assert await service.is_provider_healthy("unrecorded-provider") is True

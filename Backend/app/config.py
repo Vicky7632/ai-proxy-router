@@ -15,6 +15,8 @@ class Settings(BaseSettings):
     )
     semantic_cache_ttl_seconds: int = Field(default=3600, gt=0)
     semantic_cache_cleanup_interval_seconds: int = Field(default=3600, gt=0)
+    provider_health_failure_threshold: int = Field(default=3, gt=0)
+    provider_health_cooldown_seconds: int = Field(default=60, gt=0)
     redis_url: str | None = None
     redis_host: str = "localhost"
     redis_port: int = 6379
@@ -35,6 +37,17 @@ class Settings(BaseSettings):
     def validate_semantic_cache_cleanup_interval(cls, value):
         if isinstance(value, bool):
             raise ValueError("Semantic cache cleanup interval must be a positive integer")
+        return value
+
+    @field_validator(
+        "provider_health_failure_threshold",
+        "provider_health_cooldown_seconds",
+        mode="before",
+    )
+    @classmethod
+    def validate_provider_health_settings(cls, value):
+        if isinstance(value, bool):
+            raise ValueError("Provider health settings must be positive integers")
         return value
 
     model_config = SettingsConfigDict(

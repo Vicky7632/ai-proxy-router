@@ -50,3 +50,29 @@ def test_semantic_cache_cleanup_interval_reads_custom_environment_value(
 def test_semantic_cache_cleanup_interval_must_be_positive_integer(interval):
     with pytest.raises(ValidationError):
         make_settings(semantic_cache_cleanup_interval_seconds=interval)
+
+
+def test_provider_health_settings_have_defaults(monkeypatch):
+    monkeypatch.delenv("PROVIDER_HEALTH_FAILURE_THRESHOLD", raising=False)
+    monkeypatch.delenv("PROVIDER_HEALTH_COOLDOWN_SECONDS", raising=False)
+
+    configured = make_settings()
+
+    assert configured.provider_health_failure_threshold == 3
+    assert configured.provider_health_cooldown_seconds == 60
+
+
+@pytest.mark.parametrize(
+    ("setting", "value"),
+    [
+        ("provider_health_failure_threshold", 0),
+        ("provider_health_failure_threshold", -1),
+        ("provider_health_failure_threshold", True),
+        ("provider_health_cooldown_seconds", 0),
+        ("provider_health_cooldown_seconds", -1),
+        ("provider_health_cooldown_seconds", True),
+    ],
+)
+def test_provider_health_settings_must_be_positive_integers(setting, value):
+    with pytest.raises(ValidationError):
+        make_settings(**{setting: value})

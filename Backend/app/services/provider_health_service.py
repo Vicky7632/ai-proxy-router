@@ -1,9 +1,10 @@
 import asyncio
 from dataclasses import dataclass
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 
 from redis.exceptions import RedisError
 
+from app.config import settings
 from app.services.redis_service import redis_client
 
 PROVIDER_HEALTH_KEY_PREFIX = "provider_health:v1:"
@@ -44,6 +45,23 @@ class ProviderHealthService:
         except RedisError as error:
             raise RuntimeError("Provider health storage is unavailable") from error
         return health
+
+    async def is_provider_healthy(self, provider_name: str) -> bool:
+        health = await self.get_health(provider_name)
+        if (
+            health.consecutive_failures
+            < settings.provider_health_failure_threshold
+            or health.last_failure_at is None
+        ):
+            return True
+
+        last_failure_at = health.last_failure_at
+        if last_failure_at.tzinfo is None:
+            last_failure_at = last_failure_at.replace(tzinfo=timezone.utc)
+        cooldown_expires_at = last_failure_at + timedelta(
+            seconds=settings.provider_health_cooldown_seconds
+        )
+        return datetime.now(timezone.utc) >= cooldown_expires_at
 
     def _record_success(self, provider_name: str) -> None:
         key = self._key(provider_name)
