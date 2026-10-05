@@ -84,17 +84,27 @@ class FakeProvider:
 
 
 class FakeProviderHealthService:
-    def __init__(self, unhealthy=None, errors=None):
+    def __init__(self, unhealthy=None, errors=None, failures=None):
         self.events = []
         self.checks = []
         self.unhealthy = set(unhealthy or ())
         self.errors = errors or {}
+        self.failures = failures or {}
 
     async def is_provider_healthy(self, provider_name):
         self.checks.append(provider_name)
         if provider_name in self.errors:
             raise self.errors[provider_name]
         return provider_name not in self.unhealthy
+
+    async def get_health(self, provider_name):
+        if provider_name in self.errors:
+            raise self.errors[provider_name]
+        return type(
+            "Health",
+            (),
+            {"consecutive_failures": self.failures.get(provider_name, 0)},
+        )()
 
     async def record_success(self, provider_name):
         self.events.append(("success", provider_name))
@@ -142,6 +152,45 @@ async def test_successful_primary_provider_records_success():
 
 
 @pytest.mark.asyncio
+async def test_auto_selects_healthy_provider_with_fewest_consecutive_failures():
+    groq = FakeProvider()
+    gemini = FakeProvider(response={"id": "gemini"})
+    health_service = FakeProviderHealthService(
+        failures={"groq": 2, "gemini": 1, "openrouter": 3}
+    )
+    engine = RouterEngine(
+        {"groq": groq, "gemini": gemini, "openrouter": FakeProvider()},
+        health_service=health_service,
+    )
+
+    result = await engine.chat_completion(request("auto"))
+
+    assert result.provider == "gemini"
+    assert groq.models == []
+    assert gemini.models == ["gemini-3.6-flash"]
+    assert health_service.checks == ["groq", "gemini", "openrouter"]
+    assert health_service.events == [("success", "gemini")]
+
+
+@pytest.mark.asyncio
+async def test_auto_selection_tie_uses_provider_order():
+    groq = FakeProvider(response={"id": "groq"})
+    health_service = FakeProviderHealthService(
+        failures={"groq": 1, "gemini": 1, "openrouter": 1}
+    )
+    engine = RouterEngine(
+        {"groq": groq, "gemini": FakeProvider(), "openrouter": FakeProvider()},
+        health_service=health_service,
+    )
+
+    result = await engine.chat_completion(request("auto"))
+
+    assert result.provider == "groq"
+    assert groq.models == ["openai/gpt-oss-20b"]
+    assert health_service.events == [("success", "groq")]
+
+
+@pytest.mark.asyncio
 async def test_unhealthy_primary_provider_is_skipped_without_recording_failure():
     groq = FakeProvider()
     gemini = FakeProvider(response={"id": "gemini"})
@@ -156,7 +205,7 @@ async def test_unhealthy_primary_provider_is_skipped_without_recording_failure()
     assert result.provider == "gemini"
     assert groq.models == []
     assert gemini.models == ["gemini-3.6-flash"]
-    assert health_service.checks == ["groq", "gemini"]
+    assert health_service.checks == ["groq", "gemini", "openrouter"]
     assert health_service.events == [("success", "gemini")]
 
 
@@ -224,6 +273,26 @@ async def test_fallback_from_gemini_to_openrouter():
         ("failure", "gemini"),
         ("success", "openrouter"),
     ]
+
+
+@pytest.mark.asyncio
+async def test_explicit_model_starts_with_its_mapped_provider():
+    groq = FakeProvider()
+    gemini = FakeProvider(response={"id": "gemini"})
+    health_service = FakeProviderHealthService(
+        failures={"groq": 0, "gemini": 3, "openrouter": 1}
+    )
+    engine = RouterEngine(
+        {"groq": groq, "gemini": gemini, "openrouter": FakeProvider()},
+        health_service=health_service,
+    )
+
+    result = await engine.chat_completion(request("gemini-3.6-flash"))
+
+    assert result.provider == "gemini"
+    assert groq.models == []
+    assert gemini.models == ["gemini-3.6-flash"]
+    assert health_service.checks == ["gemini"]
 
 
 @pytest.mark.asyncio
@@ -324,8 +393,30 @@ async def test_unhealthy_provider_is_skipped_before_stream_request():
     assert groq.stream_requests == []
     assert len(gemini.stream_requests) == 1
     assert gemini.stream_requests[0].model == "gemini-3.6-flash"
-    assert health_service.checks == ["groq", "gemini"]
+    assert health_service.checks == ["groq", "gemini", "openrouter"]
     assert health_service.events == [("success", "gemini")]
+
+
+@pytest.mark.asyncio
+async def test_auto_stream_uses_lowest_failure_provider_selection():
+    groq = FakeProvider()
+    gemini = FakeProvider()
+    openrouter = FakeProvider()
+    health_service = FakeProviderHealthService(
+        failures={"groq": 2, "gemini": 1, "openrouter": 0}
+    )
+    engine = RouterEngine(
+        {"groq": groq, "gemini": gemini, "openrouter": openrouter},
+        health_service=health_service,
+    )
+
+    result = await engine.chat_completion_stream(request("auto"))
+
+    assert result.provider == "openrouter"
+    assert groq.stream_requests == []
+    assert gemini.stream_requests == []
+    assert openrouter.stream_requests[0].model == "qwen/qwen-2.5-72b-instruct"
+    assert health_service.events == [("success", "openrouter")]
 
 
 @pytest.mark.asyncio

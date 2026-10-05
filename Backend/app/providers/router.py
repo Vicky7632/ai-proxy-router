@@ -87,12 +87,17 @@ class RouterEngine:
         self, request: ChatCompletionRequest
     ) -> RoutedCompletion:
         initial_provider = self.provider_name(request.model)
-        start_index = PROVIDER_ORDER.index(initial_provider)
-        providers_to_try = PROVIDER_ORDER[start_index:]
+        providers_to_try = await self._providers_to_try(
+            request.model,
+            initial_provider,
+        )
         last_error: HTTPException | None = None
 
         for provider_name in providers_to_try:
-            if not await self._is_provider_healthy(provider_name):
+            if (
+                request.model != "auto"
+                and not await self._is_provider_healthy(provider_name)
+            ):
                 continue
             provider = self.providers[provider_name]
             resolved_model = (
@@ -122,12 +127,17 @@ class RouterEngine:
         self, request: ChatCompletionRequest
     ) -> RoutedStream:
         initial_provider = self.provider_name(request.model)
-        start_index = PROVIDER_ORDER.index(initial_provider)
-        providers_to_try = PROVIDER_ORDER[start_index:]
+        providers_to_try = await self._providers_to_try(
+            request.model,
+            initial_provider,
+        )
         last_error: HTTPException | None = None
 
         for provider_name in providers_to_try:
-            if not await self._is_provider_healthy(provider_name):
+            if (
+                request.model != "auto"
+                and not await self._is_provider_healthy(provider_name)
+            ):
                 continue
             provider = self.providers[provider_name]
             resolved_model = (
@@ -155,6 +165,36 @@ class RouterEngine:
         if last_error is not None:
             raise last_error
         raise HTTPException(status_code=502, detail="All providers failed")
+
+    async def _providers_to_try(
+        self,
+        model: str,
+        initial_provider: str,
+    ) -> tuple[str, ...]:
+        if model != "auto":
+            start_index = PROVIDER_ORDER.index(initial_provider)
+            return PROVIDER_ORDER[start_index:]
+
+        ranked_providers = []
+        for order, provider_name in enumerate(PROVIDER_ORDER):
+            if not await self._is_provider_healthy(provider_name):
+                continue
+            try:
+                health = await self.health_service.get_health(provider_name)
+                consecutive_failures = health.consecutive_failures
+            except Exception:
+                logger.exception(
+                    "Provider health details unavailable provider=%s; "
+                    "continuing routing",
+                    provider_name,
+                )
+                consecutive_failures = 0
+            ranked_providers.append(
+                (consecutive_failures, order, provider_name)
+            )
+
+        ranked_providers.sort()
+        return tuple(provider_name for _, _, provider_name in ranked_providers)
 
     async def _is_provider_healthy(self, provider_name: str) -> bool:
         try:
