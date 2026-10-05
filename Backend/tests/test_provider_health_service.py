@@ -6,6 +6,7 @@ os.environ.setdefault("GROQ_API_KEY", "test-groq-key")
 os.environ.setdefault("JWT_SECRET_KEY", "test-secret")
 
 import pytest
+from redis.exceptions import RedisError
 
 from app.config import settings
 from app.services.provider_health_service import (
@@ -211,3 +212,132 @@ async def test_missing_provider_health_is_healthy():
     service = ProviderHealthService(redis=FakeRedis())
 
     assert await service.is_provider_healthy("unrecorded-provider") is True
+
+
+@pytest.mark.asyncio
+async def test_threshold_failures_without_last_failure_timestamp_fail_open(
+    monkeypatch,
+):
+    monkeypatch.setattr(settings, "provider_health_failure_threshold", 3)
+    redis = FakeRedis()
+    redis.hashes[f"{PROVIDER_HEALTH_KEY_PREFIX}groq"] = {
+        "consecutive_failures": "3",
+    }
+    service = ProviderHealthService(redis=redis)
+
+    assert await service.is_provider_healthy("groq") is True
+
+
+@pytest.mark.asyncio
+async def test_malformed_last_failure_timestamp_fails_open(monkeypatch, caplog):
+    monkeypatch.setattr(settings, "provider_health_failure_threshold", 3)
+    redis = FakeRedis()
+    redis.hashes[f"{PROVIDER_HEALTH_KEY_PREFIX}groq"] = {
+        "consecutive_failures": "3",
+        "last_failure_at": "not-a-timestamp",
+    }
+    service = ProviderHealthService(redis=redis)
+
+    assert await service.is_provider_healthy("groq") is True
+    assert "malformed" in caplog.text
+    assert "failing open" in caplog.text
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("naive_timestamp", [False, True])
+async def test_cooldown_handles_aware_and_naive_timestamps(
+    monkeypatch, naive_timestamp
+):
+    monkeypatch.setattr(settings, "provider_health_failure_threshold", 3)
+    monkeypatch.setattr(settings, "provider_health_cooldown_seconds", 60)
+    now = datetime(2026, 10, 5, 10, 0, tzinfo=timezone.utc)
+
+    class FrozenDateTime(datetime):
+        @classmethod
+        def now(cls, tz=None):
+            return now
+
+    monkeypatch.setattr(
+        "app.services.provider_health_service.datetime",
+        FrozenDateTime,
+    )
+    last_failure_at = now - timedelta(seconds=30)
+    if naive_timestamp:
+        last_failure_at = last_failure_at.replace(tzinfo=None)
+    else:
+        last_failure_at = last_failure_at.astimezone(
+            timezone(timedelta(hours=5, minutes=30))
+        )
+
+    redis = FakeRedis()
+    redis.hashes[f"{PROVIDER_HEALTH_KEY_PREFIX}groq"] = {
+        "consecutive_failures": "3",
+        "last_failure_at": last_failure_at.isoformat(),
+    }
+    service = ProviderHealthService(redis=redis)
+
+    assert await service.is_provider_healthy("groq") is False
+
+
+@pytest.mark.asyncio
+async def test_future_failure_timestamp_fails_open(monkeypatch, caplog):
+    monkeypatch.setattr(settings, "provider_health_failure_threshold", 3)
+    now = datetime(2026, 10, 5, 10, 0, tzinfo=timezone.utc)
+
+    class FrozenDateTime(datetime):
+        @classmethod
+        def now(cls, tz=None):
+            return now
+
+    monkeypatch.setattr(
+        "app.services.provider_health_service.datetime",
+        FrozenDateTime,
+    )
+    redis = FakeRedis()
+    redis.hashes[f"{PROVIDER_HEALTH_KEY_PREFIX}groq"] = {
+        "consecutive_failures": "3",
+        "last_failure_at": (now + timedelta(minutes=5)).isoformat(),
+    }
+    service = ProviderHealthService(redis=redis)
+
+    assert await service.is_provider_healthy("groq") is True
+    assert "in the future" in caplog.text
+
+
+@pytest.mark.asyncio
+async def test_malformed_failure_counter_fails_open(monkeypatch, caplog):
+    monkeypatch.setattr(settings, "provider_health_failure_threshold", 3)
+    redis = FakeRedis()
+    redis.hashes[f"{PROVIDER_HEALTH_KEY_PREFIX}groq"] = {
+        "consecutive_failures": "many",
+        "last_failure_at": datetime.now(timezone.utc).isoformat(),
+    }
+    service = ProviderHealthService(redis=redis)
+
+    assert await service.is_provider_healthy("groq") is True
+    assert "malformed" in caplog.text
+
+
+@pytest.mark.asyncio
+async def test_unexpected_redis_health_shape_fails_open(caplog):
+    class UnexpectedHealthRedis(FakeRedis):
+        def hgetall(self, key):
+            return None
+
+    service = ProviderHealthService(redis=UnexpectedHealthRedis())
+
+    assert await service.is_provider_healthy("groq") is True
+    assert "must be a Redis hash" in caplog.text
+
+
+@pytest.mark.asyncio
+async def test_redis_lookup_failure_fails_open(caplog):
+    class UnavailableRedis(FakeRedis):
+        def hgetall(self, key):
+            raise RedisError("Redis is unavailable")
+
+    service = ProviderHealthService(redis=UnavailableRedis())
+
+    assert await service.is_provider_healthy("groq") is True
+    assert "Provider health storage is unavailable" in caplog.text
+    assert "failing open" in caplog.text

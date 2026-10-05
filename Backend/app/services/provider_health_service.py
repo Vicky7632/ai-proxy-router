@@ -1,4 +1,5 @@
 import asyncio
+import logging
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 
@@ -8,6 +9,11 @@ from app.config import settings
 from app.services.redis_service import redis_client
 
 PROVIDER_HEALTH_KEY_PREFIX = "provider_health:v1:"
+logger = logging.getLogger(__name__)
+
+
+class ProviderHealthDataError(ValueError):
+    """Raised when stored provider health data cannot be interpreted."""
 
 
 @dataclass(frozen=True)
@@ -47,7 +53,17 @@ class ProviderHealthService:
         return health
 
     async def is_provider_healthy(self, provider_name: str) -> bool:
-        health = await self.get_health(provider_name)
+        self._key(provider_name)
+        try:
+            health = await self.get_health(provider_name)
+        except (RuntimeError, ProviderHealthDataError):
+            logger.exception(
+                "Provider health unavailable or malformed provider=%s; "
+                "failing open",
+                provider_name,
+            )
+            return True
+
         if (
             health.consecutive_failures
             < settings.provider_health_failure_threshold
@@ -56,12 +72,30 @@ class ProviderHealthService:
             return True
 
         last_failure_at = health.last_failure_at
-        if last_failure_at.tzinfo is None:
-            last_failure_at = last_failure_at.replace(tzinfo=timezone.utc)
-        cooldown_expires_at = last_failure_at + timedelta(
-            seconds=settings.provider_health_cooldown_seconds
-        )
-        return datetime.now(timezone.utc) >= cooldown_expires_at
+        try:
+            if last_failure_at.tzinfo is None:
+                last_failure_at = last_failure_at.replace(tzinfo=timezone.utc)
+            else:
+                last_failure_at = last_failure_at.astimezone(timezone.utc)
+            now = datetime.now(timezone.utc)
+            if last_failure_at > now:
+                logger.warning(
+                    "Provider failure timestamp is in the future "
+                    "provider=%s; failing open",
+                    provider_name,
+                )
+                return True
+            cooldown_expires_at = last_failure_at + timedelta(
+                seconds=settings.provider_health_cooldown_seconds
+            )
+        except (OverflowError, ValueError):
+            logger.exception(
+                "Provider failure timestamp is out of range provider=%s; "
+                "failing open",
+                provider_name,
+            )
+            return True
+        return now >= cooldown_expires_at
 
     def _record_success(self, provider_name: str) -> None:
         key = self._key(provider_name)
@@ -106,19 +140,42 @@ class ProviderHealthService:
 
     @staticmethod
     def _parse_health(stored_health: dict[str, str]) -> ProviderHealth:
+        if not isinstance(stored_health, dict):
+            raise ProviderHealthDataError(
+                "Provider health data must be a Redis hash"
+            )
+
         def parse_timestamp(field: str) -> datetime | None:
             value = stored_health.get(field)
-            return datetime.fromisoformat(value) if value else None
+            if not value:
+                return None
+            if not isinstance(value, str):
+                raise ProviderHealthDataError(
+                    f"Provider health field {field} must be a timestamp string"
+                )
+            try:
+                return datetime.fromisoformat(value)
+            except ValueError as error:
+                raise ProviderHealthDataError(
+                    f"Provider health field {field} is not a valid timestamp"
+                ) from error
 
-        return ProviderHealth(
-            total_requests=int(stored_health.get("total_requests", 0)),
-            total_failures=int(stored_health.get("total_failures", 0)),
-            consecutive_failures=int(
-                stored_health.get("consecutive_failures", 0)
-            ),
-            last_success_at=parse_timestamp("last_success_at"),
-            last_failure_at=parse_timestamp("last_failure_at"),
-        )
+        try:
+            return ProviderHealth(
+                total_requests=int(stored_health.get("total_requests", 0)),
+                total_failures=int(stored_health.get("total_failures", 0)),
+                consecutive_failures=int(
+                    stored_health.get("consecutive_failures", 0)
+                ),
+                last_success_at=parse_timestamp("last_success_at"),
+                last_failure_at=parse_timestamp("last_failure_at"),
+            )
+        except ProviderHealthDataError:
+            raise
+        except (TypeError, ValueError, OverflowError) as error:
+            raise ProviderHealthDataError(
+                "Provider health counters are malformed"
+            ) from error
 
     @staticmethod
     def _execute(pipeline) -> None:
