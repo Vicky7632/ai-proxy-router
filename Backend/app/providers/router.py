@@ -92,6 +92,8 @@ class RouterEngine:
         last_error: HTTPException | None = None
 
         for provider_name in providers_to_try:
+            if not await self._is_provider_healthy(provider_name):
+                continue
             provider = self.providers[provider_name]
             resolved_model = (
                 PROVIDER_MODELS[provider_name]
@@ -125,6 +127,8 @@ class RouterEngine:
         last_error: HTTPException | None = None
 
         for provider_name in providers_to_try:
+            if not await self._is_provider_healthy(provider_name):
+                continue
             provider = self.providers[provider_name]
             resolved_model = (
                 PROVIDER_MODELS[provider_name]
@@ -151,6 +155,16 @@ class RouterEngine:
         if last_error is not None:
             raise last_error
         raise HTTPException(status_code=502, detail="All providers failed")
+
+    async def _is_provider_healthy(self, provider_name: str) -> bool:
+        try:
+            return await self.health_service.is_provider_healthy(provider_name)
+        except Exception:
+            logger.exception(
+                "Provider health check failed provider=%s; continuing routing",
+                provider_name,
+            )
+            return True
 
     async def _record_provider_health(
         self,
