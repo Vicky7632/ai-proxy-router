@@ -51,6 +51,23 @@ python -m uvicorn app.main:app --reload
 
 Visit `http://127.0.0.1:8000/docs` for the API docs.
 
+### Frontend
+
+The React/Vite dashboard lives in `Frontend/`. The development server uses
+`http://localhost:3000`, matching the backend's default `FRONTEND_ORIGIN`.
+
+```powershell
+Set-Location Frontend
+npm install
+Copy-Item .env.example .env
+npm run dev
+```
+
+Set `VITE_API_BASE_URL` in `Frontend/.env` if the backend is not running at
+`http://localhost:8000`. Sign-in uses the backend's HTTP-only auth cookies.
+Analytics, provider health, and the playground require a proxy API key; the
+dashboard keeps a connected proxy key in browser memory only.
+
 ## Authentication
 
 The backend uses JWT authentication with a short-lived access token and a
