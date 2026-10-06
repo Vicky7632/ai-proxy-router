@@ -1,4 +1,5 @@
 import { useState } from "react";
+import { flushSync } from "react-dom";
 import { Link } from "react-router-dom";
 import FeedbackPanel from "../../components/FeedbackPanel";
 import Icon from "../../components/Icon";
@@ -19,14 +20,18 @@ function PlaygroundPage() {
     event.preventDefault();
     setSubmitting(true);
     setError("");
-    setResult(null);
+    setResult("");
     try {
-      const response = await chatService.complete(proxyKey, {
-        model: model.trim(),
-        messages: [{ role: "user", content: prompt.trim() }],
-        stream: false,
-      });
-      setResult(response);
+      await chatService.stream(
+        proxyKey,
+        {
+          model: model.trim(),
+          messages: [{ role: "user", content: prompt.trim() }],
+          stream: true,
+        },
+        (chunk) =>
+          flushSync(() => setResult((prev) => prev + chunk)),
+      );
     } catch (requestError) {
       setError(getErrorMessage(requestError, "The completion request failed."));
     } finally {
@@ -103,24 +108,17 @@ function PlaygroundPage() {
 
           <section className="min-h-64 rounded-xl border border-slate-200 bg-white p-5 sm:p-6">
             <h2 className="text-sm font-semibold text-slate-900">Response</h2>
-            {submitting ? (
+            {submitting && !result ? (
               <div className="mt-5 space-y-2" role="status">
                 <div className="h-3 w-4/5 animate-pulse rounded bg-slate-100" />
                 <div className="h-3 w-full animate-pulse rounded bg-slate-100" />
                 <div className="h-3 w-3/5 animate-pulse rounded bg-slate-100" />
               </div>
-            ) : result ? (
+            ) : result !== null ? (
               <div className="mt-4">
                 <pre className="max-h-[520px] overflow-auto whitespace-pre-wrap break-words rounded-lg bg-slate-950 p-4 font-mono text-xs leading-5 text-slate-100">
-                  {typeof result.choices?.[0]?.message?.content === "string"
-                    ? result.choices[0].message.content
-                    : JSON.stringify(result, null, 2)}
+                  {result}
                 </pre>
-                {result.model && (
-                  <p className="mt-3 text-xs text-slate-400">
-                    Model: {result.model}
-                  </p>
-                )}
               </div>
             ) : (
               <p className="mt-3 text-sm leading-6 text-slate-500">
