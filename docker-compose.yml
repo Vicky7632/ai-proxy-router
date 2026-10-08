@@ -1,0 +1,87 @@
+services:
+  postgres:
+    image: pgvector/pgvector:0.8.6-pg18
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB:-ai_proxy_router}
+      POSTGRES_USER: ${POSTGRES_USER:-ai_proxy_router}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-local_dev_password}
+    ports:
+      - "127.0.0.1:5433:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql
+    healthcheck:
+      test:
+        [
+          "CMD-SHELL",
+          "pg_isready -U \"$${POSTGRES_USER}\" -d \"$${POSTGRES_DB}\"",
+        ]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 10s
+    networks:
+      - ai_proxy_network
+
+  redis:
+    image: redis:7-alpine
+    restart: unless-stopped
+    command: ["redis-server", "--appendonly", "yes"]
+    ports:
+      - "127.0.0.1:6379:6379"
+    volumes:
+      - redis_data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 3s
+      retries: 5
+    networks:
+      - ai_proxy_network
+
+  backend:
+    build:
+      context: ./Backend
+      dockerfile: DockerFile
+    restart: unless-stopped
+    env_file:
+      - ./Backend/.env
+    environment:
+      DATABASE_URL: postgresql://${POSTGRES_USER:-ai_proxy_router}:${POSTGRES_PASSWORD:-local_dev_password}@postgres:5432/${POSTGRES_DB:-ai_proxy_router}
+      REDIS_HOST: redis
+      REDIS_PORT: "6379"
+      REDIS_URL:
+      REDIS_USERNAME:
+      REDIS_PASSWORD:
+      REDIS_SSL: "false"
+      REDIS_DB: "0"
+    ports:
+      - "8000:8000"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    networks:
+      - ai_proxy_network
+
+  frontend:
+    build:
+      context: ./Frontend
+      args:
+        VITE_API_BASE_URL: ${VITE_API_BASE_URL:-http://localhost:8000}
+    restart: unless-stopped
+    ports:
+      - "3000:80"
+    depends_on:
+      - backend
+    networks:
+      - ai_proxy_network
+
+volumes:
+  postgres_data:
+  redis_data:
+
+networks:
+  ai_proxy_network:
+    driver: bridge
