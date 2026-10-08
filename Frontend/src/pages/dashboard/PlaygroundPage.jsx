@@ -52,7 +52,7 @@ function PlaygroundPage() {
           action={
             <Link
               to="/dashboard/api-keys"
-              className="inline-flex h-9 items-center gap-2 rounded-lg bg-indigo-600 px-3 text-sm font-medium text-white hover:bg-indigo-700"
+              className="inline-flex h-9 items-center gap-2 rounded-lg bg-indigo-500 px-3 text-[13px] font-semibold text-white shadow-sm shadow-indigo-950/40 transition hover:bg-indigo-400"
             >
               Manage API keys
               <Icon name="arrow" size={15} />
@@ -61,21 +61,21 @@ function PlaygroundPage() {
         />
       ) : (
         <div className="grid gap-5 lg:grid-cols-[minmax(0,1fr)_minmax(280px,0.8fr)]">
-          <section className="rounded-xl border border-slate-200 bg-white p-5 sm:p-6">
+          <section className="rounded-xl border border-slate-800/90 bg-slate-900/80 p-5 shadow-[0_12px_36px_-28px_rgba(0,0,0,0.9)] sm:p-6">
             <form onSubmit={handleSubmit} className="space-y-5">
               <label className="block">
-                <span className="mb-1.5 block text-sm font-medium text-slate-700">
+                <span className="mb-2 block text-[12px] font-semibold tracking-wide text-slate-300">
                   Model
                 </span>
                 <input
                   required
                   value={model}
                   onChange={(event) => setModel(event.target.value)}
-                  className="h-10 w-full rounded-lg border border-slate-300 px-3 font-mono text-sm shadow-sm focus:border-indigo-500 focus:outline-none focus:ring-2 focus:ring-indigo-100"
+                  className="h-10 w-full rounded-lg border border-slate-700 bg-slate-950/70 px-3 font-mono text-[13px] text-slate-100 shadow-inner shadow-black/20 transition hover:border-slate-600 focus:border-indigo-400 focus:outline-none focus:ring-2 focus:ring-indigo-500/20"
                 />
               </label>
               <label className="block">
-                <span className="mb-1.5 block text-sm font-medium text-slate-700">
+                <span className="mb-2 block text-[12px] font-semibold tracking-wide text-slate-300">
                   Prompt
                 </span>
                 <textarea
@@ -84,13 +84,13 @@ function PlaygroundPage() {
                   value={prompt}
                   onChange={(event) => setPrompt(event.target.value)}
                   placeholder="What would you like to ask?"
-                  className="w-full resize-y rounded-lg border border-slate-300 px-3 py-2.5 text-sm leading-6 shadow-sm focus:border-indigo-500 focus:outline-none focus:ring-2 focus:ring-indigo-100"
+                  className="w-full resize-y rounded-lg border border-slate-700 bg-slate-950/70 px-3 py-2.5 text-[13px] leading-6 text-slate-100 shadow-inner shadow-black/20 transition placeholder:text-slate-500 hover:border-slate-600 focus:border-indigo-400 focus:outline-none focus:ring-2 focus:ring-indigo-500/20"
                 />
               </label>
               {error && (
                 <p
                   role="alert"
-                  className="rounded-lg bg-rose-50 px-3 py-2 text-sm text-rose-700"
+                  className="rounded-lg border border-rose-900/70 bg-rose-950/40 px-3 py-2.5 text-[13px] leading-5 text-rose-200"
                 >
                   {error}
                 </p>
@@ -98,7 +98,7 @@ function PlaygroundPage() {
               <button
                 type="submit"
                 disabled={submitting || !prompt.trim() || !model.trim()}
-                className="inline-flex h-10 w-full items-center justify-center gap-2 rounded-lg bg-indigo-600 px-4 text-sm font-medium text-white hover:bg-indigo-700 disabled:cursor-not-allowed disabled:opacity-60 sm:w-auto"
+                className="inline-flex h-10 w-full items-center justify-center gap-2 rounded-lg bg-gradient-to-r from-indigo-500 to-violet-500 px-4 text-[13px] font-semibold text-white shadow-sm shadow-indigo-950/40 transition hover:from-indigo-400 hover:to-violet-400 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-indigo-400 disabled:cursor-not-allowed disabled:opacity-60 sm:w-auto"
               >
                 {submitting ? "Sending request…" : "Send request"}
                 {!submitting && <Icon name="arrow" size={15} />}
@@ -106,22 +106,26 @@ function PlaygroundPage() {
             </form>
           </section>
 
-          <section className="min-h-64 rounded-xl border border-slate-200 bg-white p-5 sm:p-6">
-            <h2 className="text-sm font-semibold text-slate-900">Response</h2>
+          <section className="min-h-64 overflow-hidden rounded-xl border border-slate-800/90 bg-slate-900/80 shadow-[0_12px_36px_-28px_rgba(0,0,0,0.9)]">
+            <div className="border-b border-slate-800 px-5 py-4 sm:px-6">
+              <h2 className="text-[13px] font-semibold tracking-tight text-slate-100">
+                Response
+              </h2>
+            </div>
             {submitting && !result ? (
-              <div className="mt-5 space-y-2" role="status">
-                <div className="h-3 w-4/5 animate-pulse rounded bg-slate-100" />
-                <div className="h-3 w-full animate-pulse rounded bg-slate-100" />
-                <div className="h-3 w-3/5 animate-pulse rounded bg-slate-100" />
+              <div className="space-y-2 p-5 sm:p-6" role="status">
+                <div className="h-3 w-4/5 animate-pulse rounded bg-slate-800" />
+                <div className="h-3 w-full animate-pulse rounded bg-slate-800" />
+                <div className="h-3 w-3/5 animate-pulse rounded bg-slate-800" />
               </div>
             ) : result !== null ? (
-              <div className="mt-4">
-                <pre className="max-h-[520px] overflow-auto whitespace-pre-wrap break-words rounded-lg bg-slate-950 p-4 font-mono text-xs leading-5 text-slate-100">
+              <div className="p-5 sm:p-6">
+                <pre className="max-h-[520px] overflow-auto whitespace-pre-wrap break-words rounded-lg border border-slate-800 bg-slate-950 p-4 font-mono text-[12px] leading-6 text-slate-100 shadow-inner shadow-black/10">
                   {result}
                 </pre>
               </div>
             ) : (
-              <p className="mt-3 text-sm leading-6 text-slate-500">
+              <p className="p-5 text-[13px] leading-6 text-slate-400 sm:p-6">
                 The response from your proxy will appear here.
               </p>
             )}

@@ -4,8 +4,8 @@
   font-family:
     Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI",
     sans-serif;
-  color: #182230;
-  background: #f7f8fa;
+  color: #e2e8f0;
+  background: #080b14;
   font-synthesis: none;
   text-rendering: optimizeLegibility;
   -webkit-font-smoothing: antialiased;
@@ -20,6 +20,9 @@ body {
   min-width: 320px;
   min-height: 100vh;
   margin: 0;
+  background:
+    radial-gradient(ellipse at 52% -24%, rgb(79 70 229 / 12%), transparent 42%),
+    #080b14;
 }
 
 button,
@@ -32,11 +35,11 @@ button:focus-visible,
 a:focus-visible,
 input:focus-visible,
 textarea:focus-visible {
-  outline: 3px solid rgb(79 70 229 / 30%);
+  outline: 3px solid rgb(129 140 248 / 48%);
   outline-offset: 2px;
 }
 
 ::selection {
-  color: #25215f;
-  background: #e3e2ff;
+  color: #f8fafc;
+  background: #4338ca;
 }

@@ -38,29 +38,31 @@ function Sidebar({ open, onClose }) {
         <button
           type="button"
           aria-label="Close navigation"
-          className="fixed inset-0 z-30 bg-slate-950/30 md:hidden"
+          className="fixed inset-0 z-30 bg-black/65 backdrop-blur-sm md:hidden"
           onClick={onClose}
         />
       )}
       <aside
-        className={`fixed inset-y-0 left-0 z-40 flex w-[264px] flex-col border-r border-slate-200 bg-white transition-transform duration-200 md:static md:z-auto md:translate-x-0 ${
+        className={`fixed inset-y-0 left-0 z-40 flex w-[264px] flex-col border-r border-slate-800/80 bg-[#0b1020] transition-transform duration-200 md:sticky md:top-0 md:h-screen md:translate-x-0 ${
           open ? "translate-x-0" : "-translate-x-full"
         }`}
       >
-        <div className="flex h-[68px] items-center gap-3 border-b border-slate-100 px-5">
-          <div className="grid h-8 w-8 place-items-center rounded-lg bg-indigo-600 text-white shadow-sm">
-            <span className="text-sm font-semibold tracking-tight">AI</span>
+        <div className="flex h-[68px] items-center gap-3 border-b border-slate-800/80 px-5">
+          <div className="grid h-8 w-8 place-items-center rounded-[10px] bg-gradient-to-br from-indigo-500 to-violet-600 text-white shadow-sm shadow-indigo-950/40">
+            <span className="text-[11px] font-bold tracking-[-0.04em]">AI</span>
           </div>
           <div className="min-w-0">
-            <p className="truncate text-sm font-semibold text-slate-950">
+            <p className="truncate text-[13px] font-semibold tracking-tight text-slate-100">
               AI Proxy Router
             </p>
-            <p className="mt-0.5 text-[11px] text-slate-400">Developer console</p>
+            <p className="mt-0.5 text-[10px] font-medium tracking-wide text-slate-500">
+              DEVELOPER CONSOLE
+            </p>
           </div>
         </div>
 
-        <nav aria-label="Main navigation" className="flex-1 space-y-1 px-3 py-5">
-          <p className="mb-2 px-3 text-[10px] font-semibold uppercase tracking-[0.13em] text-slate-400">
+        <nav aria-label="Main navigation" className="flex-1 space-y-1 px-3 py-6">
+          <p className="mb-2 px-3 text-[10px] font-semibold uppercase tracking-[0.14em] text-slate-500">
             Workspace
           </p>
           {links.map((link) => (
@@ -70,10 +72,10 @@ function Sidebar({ open, onClose }) {
               end={link.end}
               onClick={onClose}
               className={({ isActive }) =>
-                `flex h-10 items-center gap-3 rounded-lg px-3 text-[13px] font-medium transition-colors ${
+                `relative flex h-10 items-center gap-3 rounded-lg px-3 text-[13px] font-medium transition-colors ${
                   isActive
-                    ? "bg-indigo-50 text-indigo-700"
-                    : "text-slate-600 hover:bg-slate-50 hover:text-slate-950"
+                    ? "bg-indigo-500/10 text-indigo-200 ring-1 ring-inset ring-indigo-400/20"
+                    : "text-slate-400 hover:bg-slate-800/70 hover:text-slate-100"
                 }`
               }
             >
@@ -83,28 +85,28 @@ function Sidebar({ open, onClose }) {
           ))}
         </nav>
 
-        <div className="border-t border-slate-100 p-3">
+        <div className="border-t border-slate-800/80 p-3">
           {logoutError && (
-            <p role="alert" className="mb-2 px-2 text-xs leading-5 text-rose-700">
+            <p role="alert" className="mb-2 px-2 text-xs leading-5 text-rose-300">
               {logoutError}
             </p>
           )}
-          <div className="flex items-center gap-3 rounded-lg px-2 py-2">
-            <div className="grid h-9 w-9 shrink-0 place-items-center rounded-full bg-slate-100 text-xs font-semibold text-slate-600">
+          <div className="flex items-center gap-3 rounded-xl px-2 py-2 transition-colors hover:bg-slate-800/60">
+            <div className="grid h-9 w-9 shrink-0 place-items-center rounded-full bg-slate-800 text-xs font-semibold text-slate-200 ring-1 ring-inset ring-slate-700">
               {(user?.first_name?.[0] || user?.email?.[0] || "U").toUpperCase()}
             </div>
             <div className="min-w-0 flex-1">
-              <p className="truncate text-[13px] font-medium text-slate-800">
+              <p className="truncate text-[13px] font-medium text-slate-200">
                 {fullName || "Workspace member"}
               </p>
-              <p className="truncate text-xs text-slate-400">{user?.email}</p>
+              <p className="truncate text-xs text-slate-500">{user?.email}</p>
             </div>
             <button
               type="button"
               onClick={handleLogout}
               title="Log out"
               aria-label="Log out"
-              className="grid h-8 w-8 shrink-0 place-items-center rounded-md text-slate-400 transition hover:bg-slate-100 hover:text-slate-700"
+              className="grid h-8 w-8 shrink-0 place-items-center rounded-lg text-slate-500 transition-colors hover:bg-slate-700 hover:text-slate-100"
             >
               <Icon name="logout" size={17} />
             </button>
