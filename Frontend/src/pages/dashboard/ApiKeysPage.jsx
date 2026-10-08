@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import FeedbackPanel from "../../components/FeedbackPanel";
 import Icon from "../../components/Icon";
 import PageHeader from "../../components/PageHeader";
@@ -18,6 +18,9 @@ function ApiKeysPage() {
   const [error, setError] = useState("");
   const [notice, setNotice] = useState("");
   const [copyMessage, setCopyMessage] = useState("");
+  const [pendingRevokeKey, setPendingRevokeKey] = useState(null);
+  const [revoking, setRevoking] = useState(false);
+  const revokeInProgress = useRef(false);
 
   const loadKeys = useCallback(async () => {
     setLoading(true);
@@ -73,14 +76,23 @@ function ApiKeysPage() {
   }
 
   async function handleRevoke(id) {
+    if (revokeInProgress.current) {
+      return;
+    }
+    revokeInProgress.current = true;
+    setRevoking(true);
     setError("");
     setNotice("");
     try {
       await apiKeysService.revoke(id);
       setKeys((current) => current.filter((key) => key.id !== id));
       setNotice("API key revoked.");
+      setPendingRevokeKey(null);
     } catch (requestError) {
       setError(getErrorMessage(requestError, "Unable to revoke this API key."));
+    } finally {
+      revokeInProgress.current = false;
+      setRevoking(false);
     }
   }
 
@@ -301,7 +313,10 @@ function ApiKeysPage() {
                 {!key.revoked_at && (
                   <button
                     type="button"
-                    onClick={() => handleRevoke(key.id)}
+                    onClick={() => {
+                      setError("");
+                      setPendingRevokeKey(key);
+                    }}
                     className="h-8 rounded-lg border border-slate-200 px-3 text-xs font-medium text-slate-600 transition hover:border-rose-200 hover:bg-rose-50 hover:text-rose-700"
                   >
                     Revoke
@@ -312,6 +327,63 @@ function ApiKeysPage() {
           </ul>
         )}
       </section>
+
+      {pendingRevokeKey && (
+        <div
+          className="fixed inset-0 z-50 grid place-items-center bg-slate-950/40 p-4"
+          onMouseDown={(event) => {
+            if (event.target === event.currentTarget && !revoking) {
+              setPendingRevokeKey(null);
+            }
+          }}
+        >
+          <section
+            role="dialog"
+            aria-modal="true"
+            aria-labelledby="revoke-key-title"
+            className="w-full max-w-md rounded-xl border border-slate-200 bg-white p-5 shadow-xl sm:p-6"
+          >
+            <h2
+              id="revoke-key-title"
+              className="text-base font-semibold text-slate-950"
+            >
+              Revoke API key?
+            </h2>
+            <p className="mt-2 text-sm leading-6 text-slate-600">
+              Revoking <strong>{pendingRevokeKey.name || "this key"}</strong> is
+              permanent. The key will stop working immediately, and
+              applications using it will no longer be able to access the
+              proxy.
+            </p>
+            {error && (
+              <p
+                role="alert"
+                className="mt-3 rounded-lg bg-rose-50 px-3 py-2 text-sm text-rose-700"
+              >
+                {error}
+              </p>
+            )}
+            <div className="mt-6 flex justify-end gap-3">
+              <button
+                type="button"
+                disabled={revoking}
+                onClick={() => setPendingRevokeKey(null)}
+                className="h-9 rounded-lg border border-slate-200 px-3.5 text-sm font-medium text-slate-700 transition hover:bg-slate-50 disabled:cursor-not-allowed disabled:opacity-60"
+              >
+                Cancel
+              </button>
+              <button
+                type="button"
+                disabled={revoking}
+                onClick={() => handleRevoke(pendingRevokeKey.id)}
+                className="h-9 rounded-lg bg-rose-600 px-3.5 text-sm font-medium text-white transition hover:bg-rose-700 disabled:cursor-not-allowed disabled:opacity-60"
+              >
+                {revoking ? "Revoking…" : "Revoke"}
+              </button>
+            </div>
+          </section>
+        </div>
+      )}
     </>
   );
 }
