@@ -601,6 +601,7 @@ alembic revision --autogenerate -m "describe change"
 
 ## Testing
 124 tests passed
+
 The backend includes automated tests covering core functionality.
 
 The project also includes manual end-to-end verification for:
