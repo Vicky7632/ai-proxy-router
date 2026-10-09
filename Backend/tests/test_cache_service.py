@@ -1,3 +1,4 @@
+import hashlib
 import json
 import os
 import time
@@ -67,7 +68,7 @@ async def test_cache_lookup_save_and_ttl_expiration(monkeypatch):
     assert await cache_service.get_cached_response(req) is None
 
 
-def test_normalized_request_is_deterministic_and_key_includes_model_and_prompt():
+def test_normalized_request_is_deterministic_and_key_ignores_stream_mode():
     first = {
         "stream": False,
         "messages": [{"content": "Hello", "role": "user"}],
@@ -84,6 +85,9 @@ def test_normalized_request_is_deterministic_and_key_includes_model_and_prompt()
     assert cache_service.get_cache_key(first) == cache_service.get_cache_key(
         equivalent
     )
+    assert cache_service.get_cache_key(first) == cache_service.get_cache_key(
+        {**first, "stream": True}
+    )
     assert cache_service.get_cache_key({**first, "api_key": "secret-a"}) == (
         cache_service.get_cache_key({**first, "api_key": "secret-b"})
     )
@@ -96,18 +100,51 @@ def test_normalized_request_is_deterministic_and_key_includes_model_and_prompt()
 
 
 @pytest.mark.asyncio
-async def test_stream_requests_bypass_cache(monkeypatch):
+async def test_stream_lookup_falls_back_to_legacy_non_stream_cache_key(
+    monkeypatch,
+):
     redis = FakeRedis()
     monkeypatch.setattr(cache_service, "redis_client", redis)
+    req = request(stream=True)
+    legacy_payload = req.model_copy(update={"stream": False}).model_dump(
+        mode="json",
+        exclude_none=False,
+    )
+    legacy_normalized = json.dumps(
+        legacy_payload,
+        sort_keys=True,
+        separators=(",", ":"),
+        ensure_ascii=False,
+    )
+    legacy_digest = hashlib.sha256(legacy_normalized.encode("utf-8")).hexdigest()
+    legacy_key = f"{cache_service.CACHE_KEY_PREFIX}{legacy_digest}"
+    redis.values[legacy_key] = json.dumps({"id": "legacy-cached"})
+
+    assert legacy_key != cache_service.get_cache_key(req)
+    assert await cache_service.get_cached_response(req) == {
+        "id": "legacy-cached"
+    }
+
+
+@pytest.mark.asyncio
+async def test_stream_and_non_stream_requests_share_cache(monkeypatch):
+    redis = FakeRedis()
+    monkeypatch.setattr(cache_service, "redis_client", redis)
+    non_stream_request = request()
     stream_request = request(stream=True)
 
+    assert cache_service.get_cache_key(non_stream_request) == (
+        cache_service.get_cache_key(stream_request)
+    )
     assert await cache_service.get_cached_response(stream_request) is None
     await cache_service.save_cached_response(
         stream_request,
-        {"id": "must-not-be-saved"},
+        {"id": "saved-from-stream"},
     )
 
-    assert redis.values == {}
+    assert await cache_service.get_cached_response(non_stream_request) == {
+        "id": "saved-from-stream"
+    }
 
 
 @pytest.mark.asyncio

@@ -26,28 +26,27 @@ The goal was to understand how an AI gateway works internally rather than simply
 ## Architecture
 
 ```text
-                         ┌──────────────────────┐
-                         │    React Dashboard   │
-                         │  React + Tailwind    │
-                         └──────────┬───────────┘
-                                    │
-                                    ▼
-                         ┌──────────────────────┐
-                         │      FastAPI         │
-                         │     API Gateway      │
-                         └──────────┬───────────┘
-                                    │
-                    ┌───────────────┼────────────────┐
-                    │               │                │
-                    ▼               ▼                ▼
-              ┌──────────┐   ┌────────────┐   ┌──────────────┐
-              │  Redis   │   │ PostgreSQL │   │   Provider   │
-              │          │   │ + pgvector │   │   Router     │
-              │ Exact    │   │ Semantic   │   │              │
-              │ Cache    │   │ Cache      │   │ Groq         │
-              │ Sessions │   │ Analytics  │   │ Gemini       │
-              │ Health   │   │            │   │ OpenRouter   │
-              └──────────┘   └────────────┘   └──────────────┘
+                    +----------------------+
+                    |   React Dashboard    |
+                    |  React + Tailwind    |
+                    +----------+-----------+
+                               |
+                               v
+                    +----------------------+
+                    |       FastAPI        |
+                    |     API Gateway      |
+                    +----------+-----------+
+                               |
+               +---------------+----------------+
+               |               |                |
+               v               v                v
+        +------------+  +-------------+  +--------------+
+        |   Redis    |  | PostgreSQL  |  |   Provider   |
+        |            |  | + pgvector  |  |   Router     |
+        | Exact Cache|  |Semantic Cache|  | Groq        |
+        | Sessions   |  | Analytics   |  | Gemini      |
+        | Health     |  |             |  | OpenRouter  |
+        +------------+  +-------------+  +--------------+
 ```
 
 ---
@@ -60,11 +59,14 @@ The router uses a multi-layer cache before making a provider request.
 
 ```text
 Request
-   ↓
+   |
+   v
 Redis lookup
-   ↓
+   |
+   v
 HIT
-   ↓
+   |
+   v
 Return cached response
 ```
 
@@ -74,15 +76,20 @@ No embedding generation, semantic search, or provider call is required.
 
 ```text
 Request
-   ↓
+   |
+   v
 Redis MISS
-   ↓
+   |
+   v
 Generate embedding
-   ↓
+   |
+   v
 pgvector semantic search
-   ↓
+   |
+   v
 Semantic HIT
-   ↓
+   |
+   v
 Return existing response
 ```
 
@@ -92,17 +99,23 @@ This allows similar requests with different wording to reuse an existing respons
 
 ```text
 Request
-   ↓
+   |
+   v
 Redis MISS
-   ↓
+   |
+   v
 Semantic Cache MISS
-   ↓
+   |
+   v
 Provider Router
-   ↓
+   |
+   v
 LLM Provider
-   ↓
+   |
+   v
 Store response
-   ↓
+   |
+   v
 Return response
 ```
 
@@ -110,23 +123,32 @@ Return response
 
 ```text
 Client
-  ↓
+  |
+  v
 Authentication
-  ↓
+  |
+  v
 API Key Validation
-  ↓
+  |
+  v
 Redis Exact Cache
-  ↓
+  |
+  v
 Semantic Cache
-  ↓
+  |
+  v
 Provider Selection
-  ↓
+  |
+  v
 LLM Provider
-  ↓
+  |
+  v
 Response Storage
-  ↓
+  |
+  v
 Analytics
-  ↓
+  |
+  v
 Client
 ```
 
@@ -168,9 +190,11 @@ Redis is used for fast exact-match response caching.
 
 ```text
 Same request
-    ↓
+    |
+    v
 Redis HIT
-    ↓
+    |
+    v
 Cached response
 ```
 
@@ -180,11 +204,14 @@ PostgreSQL + pgvector is used for similarity-based cache lookup.
 
 ```text
 Similar request
-    ↓
+    |
+    v
 Generate embedding
-    ↓
+    |
+    v
 pgvector search
-    ↓
+    |
+    v
 Semantic HIT / MISS
 ```
 
@@ -233,17 +260,29 @@ The chat completion endpoint supports streaming responses using Server-Sent Even
 
 ```text
 Client
-  ↓
+  |
+  v
 FastAPI
-  ↓
-Provider
-  ↓
-SSE chunks
-  ↓
-Client
+  |
+  v
+Redis exact-cache lookup
+  |
+  +-- HIT --> Return cached completion as SSE
+  |
+  +-- MISS --> Semantic-cache lookup
+                 |
+                 +-- HIT --> Return cached completion as SSE
+                 |
+                 +-- MISS --> Provider stream --> Forward SSE chunks
+                                  |
+                                  v
+                       Assemble completed response
+                                  |
+                                  v
+                       Save valid completion to Redis
 ```
 
-Streaming requests bypass the normal response-cache lookup and forward provider chunks incrementally to the client.
+Streaming requests use the same Redis exact-cache key as non-streaming requests. Redis is checked first; on a miss, the request checks the semantic cache and calls a provider only if both caches miss. Provider chunks are forwarded to the client as they arrive. The router assembles and saves the response only after a valid, complete provider stream; interrupted, failed, or incomplete streams are not cached. Redis and semantic cache hits are returned as OpenAI-compatible SSE.
 
 ---
 
@@ -266,12 +305,26 @@ Tracked metrics include:
 Example:
 
 ```text
-Total Requests      → 51
-Cache Hits          → 6
-Redis Hits          → 3
-Semantic Hits       → 3
-Provider Calls      → 11
-Cache Hit Rate      → 11.8%
+Total Requests      = 51
+Cache Hits          = 6
+Redis Hits          = 3
+Semantic Hits       = 3
+Provider Calls      = 11
+Cache Hit Rate      = 11.8%
+```
+
+### Cache and Provider Logs
+
+The backend emits INFO-level structured events to stderr (visible in backend container logs) for Redis and semantic cache lookup outcomes, streaming provider invocation, and successful streaming cache saves. Events include the cache type, outcome, request mode, model, and provider where applicable. Prompt contents and credentials are not logged.
+
+Example event names and outcomes:
+
+```text
+event=cache_lookup outcome=redis_miss cache_type=redis
+event=cache_lookup outcome=semantic_miss cache_type=semantic
+event=provider_invocation request_mode=stream
+event=stream_cache_save cache_type=redis outcome=saved
+event=cache_lookup outcome=redis_hit cache_type=redis
 ```
 
 ---
@@ -322,33 +375,28 @@ Cache Hit Rate      → 11.8%
 
 ```text
 AI Proxy Router
-│
-├── Backend
-│   ├── app
-│   │   ├── api
-│   │   ├── core
-│   │   ├── db
-│   │   ├── models
-│   │   ├── services
-│   │   └── main.py
-│   │
-│   ├── alembic
-│   ├── tests
-│   ├── DockerFile
-│   ├── requirements.txt
-|
-│
-├── Frontend
-│   ├── src
-│   │   ├── components
-│   │   ├── pages
-│   │   ├── services
-│   │   └── ...
-│   ├── Dockerfile
-│   └── package.json
-│
-├── docker-compose.yml
-└── README.md
++-- Backend
+|   +-- app
+|   |   +-- api
+|   |   +-- core
+|   |   +-- db
+|   |   +-- models
+|   |   +-- services
+|   |   +-- main.py
+|   +-- alembic
+|   +-- tests
+|   +-- DockerFile
+|   +-- requirements.txt
++-- Frontend
+|   +-- src
+|   |   +-- components
+|   |   +-- pages
+|   |   +-- services
+|   |   +-- ...
+|   +-- Dockerfile
+|   +-- package.json
++-- docker-compose.yml
++-- README.md
 ```
 
 ---
@@ -514,13 +562,17 @@ Dashboard authentication uses HTTP-only cookies.
 
 ```text
 Register
-   ↓
+   |
+   v
 Login
-   ↓
+   |
+   v
 Access Token + Refresh Token
-   ↓
+   |
+   v
 HTTP-only Cookies
-   ↓
+   |
+   v
 Protected Dashboard
 ```
 
@@ -600,7 +652,8 @@ alembic revision --autogenerate -m "describe change"
 ---
 
 ## Testing
-124 tests passed
+
+The latest full backend test run completed with **133 tests passed** and **41 deprecation warnings**.
 
 The backend includes automated tests covering core functionality.
 

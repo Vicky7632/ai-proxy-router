@@ -689,6 +689,11 @@ async def test_streaming_endpoint_returns_sse_response(monkeypatch):
     )
     monkeypatch.setattr(chat_api, "router_engine", engine)
     monkeypatch.setattr(chat_api, "save_request_log", lambda *args: None)
+    monkeypatch.setattr(
+        chat_api.semantic_cache_service,
+        "lookup_semantic_cache",
+        _semantic_miss,
+    )
 
     async def allow_request(api_key_id):
         return 9

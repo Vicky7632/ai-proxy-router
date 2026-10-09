@@ -1,4 +1,6 @@
 import asyncio
+import logging
+import sys
 from contextlib import asynccontextmanager, suppress
 
 from fastapi import FastAPI
@@ -13,6 +15,13 @@ from app.routes.keys import router as keys_router
 from app.services.semantic_cache_cleanup_service import (
     run_semantic_cache_cleanup_loop,
 )
+
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s %(levelname)s %(name)s %(message)s",
+    stream=sys.stderr,
+)
+logging.getLogger().setLevel(logging.INFO)
 
 
 @asynccontextmanager
