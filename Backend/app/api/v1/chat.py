@@ -29,7 +29,7 @@ router_engine = RouterEngine()
 
 def save_request_log(
     api_key_id,
-    provider_name: str,
+    provider_name: str | None,
     model: str,
     prompt_tokens: int | None,
     completion_tokens: int | None,
@@ -536,10 +536,12 @@ async def chat_completions(
     redis_cache_status = None
     semantic_cache_status = None
     provider_called = False
+    request_log_provider = None
 
     def mark_provider_called(provider_name: str, model: str) -> None:
-        nonlocal provider_called
+        nonlocal provider_called, request_log_provider
         provider_called = True
+        request_log_provider = provider_name
         if request.stream:
             logger.info(
                 "event=provider_invocation request_mode=stream "
@@ -735,7 +737,7 @@ async def chat_completions(
         background_tasks.add_task(
             save_request_log,
             api_key.id,
-            router_engine.provider_name(request.model),
+            request_log_provider,
             request.model,
             None,
             None,

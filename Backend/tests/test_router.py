@@ -765,6 +765,77 @@ async def test_endpoint_logs_no_provider_call_when_all_providers_unhealthy(
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("stream", [False, True])
+async def test_unsupported_model_is_logged_without_provider(
+    monkeypatch,
+    stream,
+):
+    class FakeQuery:
+        def filter(self, *args):
+            return self
+
+        def first(self):
+            return None
+
+    class FakeSession:
+        def __init__(self):
+            self.rows = []
+            self.bind = type(
+                "Bind",
+                (),
+                {"url": type("URL", (), {"database": "test", "host": None})()},
+            )()
+
+        def query(self, model):
+            return FakeQuery()
+
+        def add(self, row):
+            self.rows.append(row)
+
+        def flush(self):
+            return None
+
+        def commit(self):
+            return None
+
+        def rollback(self):
+            return None
+
+        def close(self):
+            return None
+
+    db = FakeSession()
+    monkeypatch.setattr(chat_api, "SessionLocal", lambda: db)
+
+    async def allow_request(api_key_id):
+        return 9
+
+    async def budget_left(api_key):
+        return 3.42
+
+    monkeypatch.setattr(chat_api.rate_limiter, "check_limit", allow_request)
+    monkeypatch.setattr(chat_api.budget_service, "check_budget", budget_left)
+
+    tasks = BackgroundTasks()
+    with pytest.raises(HTTPException) as error:
+        await chat_api.chat_completions(
+            request("not-a-model", stream=stream),
+            tasks,
+            Response(),
+            type("APIKeyStub", (), {"id": "key-id"})(),
+        )
+
+    await tasks()
+
+    assert error.value.status_code == 400
+    assert "Unknown model 'not-a-model'" in error.value.detail
+    assert len(db.rows) == 1
+    assert db.rows[0].provider_id is None
+    assert db.rows[0].model == "not-a-model"
+    assert db.rows[0].status == "400"
+
+
+@pytest.mark.asyncio
 async def test_streaming_endpoint_returns_sse_response(monkeypatch):
     health_service = FakeProviderHealthService()
     engine = RouterEngine(
