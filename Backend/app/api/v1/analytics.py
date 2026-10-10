@@ -20,7 +20,7 @@ def cache_analytics(
     from_datetime: datetime | None = Query(default=None, alias="from"),
     to_datetime: datetime | None = Query(default=None, alias="to"),
     db: Session = Depends(get_db),
-    _api_key=Depends(get_api_key),
+    api_key=Depends(get_api_key),
 ) -> CacheAnalyticsResponse:
     normalized_from = normalize_utc_datetime(from_datetime)
     normalized_to = normalize_utc_datetime(to_datetime)
@@ -36,6 +36,7 @@ def cache_analytics(
 
     analytics = get_cache_analytics(
         db,
+        api_key_id=api_key.id,
         from_datetime=normalized_from,
         to_datetime=normalized_to,
     )

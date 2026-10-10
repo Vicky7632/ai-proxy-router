@@ -1,4 +1,5 @@
 from datetime import datetime
+from uuid import UUID
 
 from sqlalchemy import case, func
 from sqlalchemy.orm import Session
@@ -8,6 +9,7 @@ from app.db.models.request_log import RequestLog
 
 def get_cache_analytics_counts(
     db: Session,
+    api_key_id: UUID,
     from_datetime: datetime | None = None,
     to_datetime: datetime | None = None,
 ) -> tuple[int, int, int, int, int, int]:
@@ -39,6 +41,7 @@ def get_cache_analytics_counts(
             )
         ),
     )
+    query = query.filter(RequestLog.api_key_id == api_key_id)
     if from_datetime is not None:
         query = query.filter(RequestLog.created_at >= from_datetime)
     if to_datetime is not None:

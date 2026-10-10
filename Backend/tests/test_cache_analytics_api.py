@@ -93,6 +93,18 @@ def get_analytics(client, api_key, params=None):
     )
 
 
+def add_api_key(db, user_id, raw_key):
+    api_key = APIKey(
+        id=uuid.uuid4(),
+        user_id=user_id,
+        key_hash=hashlib.sha256(raw_key.encode()).hexdigest(),
+        is_active=True,
+    )
+    db.add(api_key)
+    db.commit()
+    return api_key.id
+
+
 def add_time_window_requests(db, api_key_id):
     rows = [
         (datetime(2026, 9, 30, 23, 59), "miss", "miss", True),
@@ -167,6 +179,91 @@ def test_mixed_cache_outcomes_do_not_count_semantic_hit_as_provider_call(
         "provider_calls": 1,
         "cache_hits": 2,
         "cache_hit_rate": pytest.approx(200 / 3),
+    }
+
+
+def test_cache_analytics_are_isolated_by_api_key_and_time_window(
+    analytics_client,
+):
+    client, db, first_raw_key, first_key_id = analytics_client
+    first_key = db.query(APIKey).filter(APIKey.id == first_key_id).one()
+    second_raw_key = "analytics-second-test-key"
+    second_key_id = add_api_key(db, first_key.user_id, second_raw_key)
+
+    for created_at, redis_status, semantic_status, provider_called in [
+        (datetime(2026, 10, 1, 8), "hit", None, False),
+        (datetime(2026, 10, 1, 9), "miss", "hit", False),
+        (datetime(2026, 10, 1, 10), "miss", "miss", True),
+    ]:
+        add_request(
+            db,
+            first_key_id,
+            created_at=created_at,
+            redis_cache_status=redis_status,
+            semantic_cache_status=semantic_status,
+            provider_called=provider_called,
+        )
+    add_request(
+        db,
+        second_key_id,
+        created_at=datetime(2026, 10, 1, 11),
+        redis_cache_status="miss",
+        semantic_cache_status="miss",
+        provider_called=True,
+    )
+    add_request(
+        db,
+        second_key_id,
+        created_at=datetime(2026, 10, 3, 11),
+        redis_cache_status="hit",
+        semantic_cache_status=None,
+        provider_called=False,
+    )
+
+    window = {
+        "from": "2026-10-01T00:00:00Z",
+        "to": "2026-10-02T00:00:00Z",
+    }
+    first_response = get_analytics(client, first_raw_key)
+    second_response = get_analytics(client, second_raw_key)
+    first_window_response = get_analytics(client, first_raw_key, params=window)
+    second_window_response = get_analytics(
+        client,
+        second_raw_key,
+        params=window,
+    )
+
+    assert first_response.status_code == second_response.status_code == 200
+    assert first_response.json() == {
+        "total_requests": 3,
+        "redis_hits": 1,
+        "redis_misses": 2,
+        "semantic_hits": 1,
+        "semantic_misses": 1,
+        "provider_calls": 1,
+        "cache_hits": 2,
+        "cache_hit_rate": pytest.approx(200 / 3),
+    }
+    assert second_response.json() == {
+        "total_requests": 2,
+        "redis_hits": 1,
+        "redis_misses": 1,
+        "semantic_hits": 0,
+        "semantic_misses": 1,
+        "provider_calls": 1,
+        "cache_hits": 1,
+        "cache_hit_rate": 50.0,
+    }
+    assert first_window_response.json() == first_response.json()
+    assert second_window_response.json() == {
+        "total_requests": 1,
+        "redis_hits": 0,
+        "redis_misses": 1,
+        "semantic_hits": 0,
+        "semantic_misses": 1,
+        "provider_calls": 1,
+        "cache_hits": 0,
+        "cache_hit_rate": 0.0,
     }
 
 

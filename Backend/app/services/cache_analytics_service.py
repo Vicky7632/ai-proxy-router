@@ -1,5 +1,6 @@
 from dataclasses import dataclass
 from datetime import datetime, timezone
+from uuid import UUID
 
 from sqlalchemy.orm import Session
 
@@ -22,6 +23,7 @@ class CacheAnalytics:
 
 def get_cache_analytics(
     db: Session,
+    api_key_id: UUID,
     from_datetime: datetime | None = None,
     to_datetime: datetime | None = None,
 ) -> CacheAnalytics:
@@ -34,6 +36,7 @@ def get_cache_analytics(
         provider_calls,
     ) = get_cache_analytics_counts(
         db,
+        api_key_id=api_key_id,
         from_datetime=normalize_utc_datetime(from_datetime),
         to_datetime=normalize_utc_datetime(to_datetime),
     )
