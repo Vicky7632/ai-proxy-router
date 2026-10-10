@@ -1,4 +1,5 @@
 import json
+import math
 import os
 import time
 from types import SimpleNamespace
@@ -10,13 +11,95 @@ os.environ.setdefault("JWT_SECRET_KEY", "test-secret")
 
 import pytest
 from fastapi import BackgroundTasks, HTTPException
+from pgvector.sqlalchemy import Vector
+from sqlalchemy import BigInteger, create_engine, event
+from sqlalchemy.dialects.postgresql import JSONB
+from sqlalchemy.ext.compiler import compiles
+from sqlalchemy.orm import sessionmaker
+from sqlalchemy.pool import StaticPool
+from sqlalchemy.sql.elements import BinaryExpression
+from sqlalchemy.sql.operators import custom_op
 from starlette.responses import Response
 
 import app.api.v1.chat as chat_api
+from app.db.base import Base
+from app.db.models.prompt_cache import PromptCache
+from app.db.repositories import prompt_cache_repository
 from app.providers.router import RoutedCompletion
 from app.schemas.chat import ChatCompletionRequest
 from app.services import cache_service, semantic_cache_service
 from app.services.prompt_cache_service import SemanticCacheHit
+
+
+@compiles(BigInteger, "sqlite")
+def compile_bigint_for_sqlite(type_, compiler, **kwargs):
+    return "INTEGER"
+
+
+@compiles(JSONB, "sqlite")
+def compile_jsonb_for_sqlite(type_, compiler, **kwargs):
+    return "JSON"
+
+
+@compiles(Vector, "sqlite")
+def compile_vector_for_sqlite(type_, compiler, **kwargs):
+    return "TEXT"
+
+
+@compiles(BinaryExpression, "sqlite")
+def compile_vector_distance_for_sqlite(element, compiler, **kwargs):
+    operator = element.operator
+    if isinstance(operator, custom_op) and operator.opstring == "<=>":
+        left = compiler.process(element.left, **kwargs)
+        right = compiler.process(element.right, **kwargs)
+        return f"cosine_distance({left}, {right})"
+    return compiler.visit_binary(element, **kwargs)
+
+
+@pytest.fixture
+def prompt_cache_database(monkeypatch):
+    engine = create_engine(
+        "sqlite://",
+        connect_args={"check_same_thread": False},
+        poolclass=StaticPool,
+    )
+
+    def register_cosine_distance(connection, _):
+        def cosine_distance(left, right):
+            left_vector = json.loads(left)
+            right_vector = json.loads(right)
+            dot_product = sum(
+                left_value * right_value
+                for left_value, right_value in zip(
+                    left_vector,
+                    right_vector,
+                )
+            )
+            left_norm = math.sqrt(sum(value * value for value in left_vector))
+            right_norm = math.sqrt(
+                sum(value * value for value in right_vector)
+            )
+            if left_norm == 0 or right_norm == 0:
+                return None
+            return 1.0 - dot_product / (left_norm * right_norm)
+
+        connection.create_function(
+            "cosine_distance",
+            2,
+            cosine_distance,
+        )
+
+    event.listen(engine, "connect", register_cosine_distance)
+    Base.metadata.create_all(engine, tables=[PromptCache.__table__])
+    monkeypatch.setattr(
+        prompt_cache_repository,
+        "SessionLocal",
+        sessionmaker(bind=engine),
+    )
+    try:
+        yield
+    finally:
+        engine.dispose()
 
 
 class FakeRedis:
@@ -308,6 +391,72 @@ async def test_semantic_cache_scopes_entries_by_temperature(monkeypatch):
     assert compatible_response.status_code == 200
     assert compatible_response.headers["X-Cache"] == "HIT"
     assert engine.calls == 2
+
+
+@pytest.mark.asyncio
+async def test_database_semantic_cache_isolates_temperature(
+    prompt_cache_database,
+    monkeypatch,
+):
+    embedding = [0.25] * 768
+
+    async def generate(prompt):
+        return embedding
+
+    monkeypatch.setattr(semantic_cache_service, "generate_embedding", generate)
+    prompt = json.dumps(
+        [{"role": "user", "content": "How can I learn Python?"}],
+        ensure_ascii=False,
+        separators=(",", ":"),
+    )
+    model = "openai/gpt-oss-20b"
+
+    low_temperature_lookup = await semantic_cache_service.lookup_semantic_cache(
+        prompt,
+        model,
+        0.2,
+    )
+    assert low_temperature_lookup.hit is None
+
+    low_temperature_response = {"choices": [{"message": {"content": "low"}}]}
+    await semantic_cache_service.save_semantic_cache(
+        low_temperature_lookup,
+        low_temperature_response,
+        model,
+        "groq",
+    )
+
+    high_temperature_lookup = await semantic_cache_service.lookup_semantic_cache(
+        prompt,
+        model,
+        0.8,
+    )
+    assert high_temperature_lookup.hit is None
+    assert low_temperature_lookup.cache_model != high_temperature_lookup.cache_model
+
+    high_temperature_response = {"choices": [{"message": {"content": "high"}}]}
+    await semantic_cache_service.save_semantic_cache(
+        high_temperature_lookup,
+        high_temperature_response,
+        model,
+        "groq",
+    )
+
+    low_temperature_hit = await semantic_cache_service.lookup_semantic_cache(
+        prompt,
+        model,
+        0.2,
+    )
+    high_temperature_hit = await semantic_cache_service.lookup_semantic_cache(
+        prompt,
+        model,
+        0.8,
+    )
+
+    assert low_temperature_hit.hit is not None
+    assert low_temperature_hit.hit.response == low_temperature_response
+    assert high_temperature_hit.hit is not None
+    assert high_temperature_hit.hit.response == high_temperature_response
 
 
 @pytest.mark.asyncio
