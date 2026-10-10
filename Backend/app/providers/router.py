@@ -1,6 +1,6 @@
 from dataclasses import dataclass
 import logging
-from typing import Any
+from typing import Any, Callable
 
 from fastapi import HTTPException
 import httpx
@@ -84,7 +84,9 @@ class RouterEngine:
         return provider
 
     async def chat_completion(
-        self, request: ChatCompletionRequest
+        self,
+        request: ChatCompletionRequest,
+        on_provider_attempt: Callable[[str, str], None] | None = None,
     ) -> RoutedCompletion:
         initial_provider = self.provider_name(request.model)
         providers_to_try = await self._providers_to_try(
@@ -137,6 +139,8 @@ class RouterEngine:
                 "auto" if request.model == "auto" else "explicit",
             )
             try:
+                if on_provider_attempt is not None:
+                    on_provider_attempt(provider_name, resolved_model)
                 response = await provider.chat_completion(provider_request)
                 await self._record_provider_health(provider_name, success=True)
                 logger.info(
@@ -179,7 +183,9 @@ class RouterEngine:
         raise HTTPException(status_code=502, detail="All providers failed")
 
     async def chat_completion_stream(
-        self, request: ChatCompletionRequest
+        self,
+        request: ChatCompletionRequest,
+        on_provider_attempt: Callable[[str, str], None] | None = None,
     ) -> RoutedStream:
         initial_provider = self.provider_name(request.model)
         providers_to_try = await self._providers_to_try(
@@ -232,6 +238,8 @@ class RouterEngine:
                 "auto" if request.model == "auto" else "explicit",
             )
             try:
+                if on_provider_attempt is not None:
+                    on_provider_attempt(provider_name, resolved_model)
                 stream = await provider.chat_completion_stream(provider_request)
                 await self._record_provider_health(provider_name, success=True)
                 logger.info(

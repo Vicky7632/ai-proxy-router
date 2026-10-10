@@ -123,11 +123,21 @@ async def test_fallback_from_groq_to_gemini(caplog):
         {"groq": groq, "gemini": gemini, "openrouter": FakeProvider()},
         health_service=health_service,
     )
+    provider_attempts = []
 
-    result = await engine.chat_completion(request("auto"))
+    result = await engine.chat_completion(
+        request("auto"),
+        on_provider_attempt=lambda provider, model: provider_attempts.append(
+            (provider, model)
+        ),
+    )
 
     assert result.response == {"id": "gemini"}
     assert result.provider == "gemini"
+    assert provider_attempts == [
+        ("groq", "openai/gpt-oss-20b"),
+        ("gemini", "gemini-3.6-flash"),
+    ]
     assert groq.models == ["openai/gpt-oss-20b"]
     assert gemini.models == ["gemini-3.6-flash"]
     assert health_service.events == [
@@ -250,12 +260,19 @@ async def test_all_unhealthy_providers_return_existing_failure(caplog):
         {"groq": groq, "gemini": gemini, "openrouter": openrouter},
         health_service=health_service,
     )
+    provider_attempts = []
 
     with pytest.raises(HTTPException) as error:
-        await engine.chat_completion(request("auto"))
+        await engine.chat_completion(
+            request("auto"),
+            on_provider_attempt=lambda provider, model: provider_attempts.append(
+                (provider, model)
+            ),
+        )
 
     assert error.value.status_code == 502
     assert error.value.detail == "All providers failed"
+    assert provider_attempts == []
     assert groq.models == gemini.models == openrouter.models == []
     assert health_service.checks == ["groq", "gemini", "openrouter"]
     assert health_service.events == []
@@ -352,13 +369,21 @@ async def test_stream_falls_back_before_streaming_starts():
         {"groq": groq, "gemini": gemini, "openrouter": FakeProvider()},
         health_service=health_service,
     )
+    provider_attempts = []
 
     result = await engine.chat_completion_stream(
-        request("openai/gpt-oss-20b")
+        request("openai/gpt-oss-20b"),
+        on_provider_attempt=lambda provider, model: provider_attempts.append(
+            (provider, model)
+        ),
     )
 
     assert result.provider == "gemini"
     assert result.model == "gemini-3.6-flash"
+    assert provider_attempts == [
+        ("groq", "openai/gpt-oss-20b"),
+        ("gemini", "gemini-3.6-flash"),
+    ]
     assert groq.stream_requests[0].stream is True
     assert gemini.stream_requests[0].model == "gemini-3.6-flash"
     assert health_service.events == [
@@ -503,7 +528,7 @@ async def test_stream_forwards_chunks_and_logs_usage_after_completion():
     received = [
         chunk
         async for chunk in chat_api.stream_with_logging(
-            routed_stream, tasks, "key-id", 0
+            routed_stream, tasks, "key-id", 0, provider_called=True
         )
     ]
 
@@ -675,6 +700,68 @@ async def _semantic_miss(prompt, model, temperature):
         hit=None,
         cache_model=model,
     )
+
+
+@pytest.mark.asyncio
+async def test_endpoint_logs_no_provider_call_when_all_providers_unhealthy(
+    monkeypatch,
+    caplog,
+):
+    caplog.set_level("INFO")
+    groq = FakeProvider()
+    gemini = FakeProvider()
+    openrouter = FakeProvider()
+    engine = RouterEngine(
+        {"groq": groq, "gemini": gemini, "openrouter": openrouter},
+        health_service=FakeProviderHealthService(
+            unhealthy={"groq", "gemini", "openrouter"}
+        ),
+    )
+    logged_requests = []
+    monkeypatch.setattr(chat_api, "router_engine", engine)
+
+    async def cache_miss(*args, **kwargs):
+        return None
+
+    monkeypatch.setattr(
+        chat_api.cache_service,
+        "get_cached_response",
+        cache_miss,
+    )
+    monkeypatch.setattr(
+        chat_api,
+        "save_request_log",
+        lambda *args: logged_requests.append(args),
+    )
+
+    async def allow_request(api_key_id):
+        return 9
+
+    async def budget_left(api_key):
+        return 3.42
+
+    monkeypatch.setattr(chat_api.rate_limiter, "check_limit", allow_request)
+    monkeypatch.setattr(chat_api.budget_service, "check_budget", budget_left)
+    monkeypatch.setattr(
+        chat_api.semantic_cache_service,
+        "lookup_semantic_cache",
+        _semantic_miss,
+    )
+
+    tasks = BackgroundTasks()
+    with pytest.raises(HTTPException, match="All providers failed"):
+        await chat_api.chat_completions(
+            request("auto"),
+            tasks,
+            Response(),
+            type("APIKeyStub", (), {"id": "key-id"})(),
+        )
+    await tasks()
+
+    assert groq.models == gemini.models == openrouter.models == []
+    assert len(logged_requests) == 1
+    assert logged_requests[0][-1] is False
+    assert "event=provider_invocation" not in caplog.text
 
 
 @pytest.mark.asyncio

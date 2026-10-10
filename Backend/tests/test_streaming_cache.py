@@ -223,8 +223,14 @@ def install_fakes(monkeypatch, stream_factory=None):
         def provider_name(self, model):
             return "groq"
 
-        async def chat_completion_stream(self, request):
+        async def chat_completion_stream(
+            self,
+            request,
+            on_provider_attempt=None,
+        ):
             self.stream_calls += 1
+            if on_provider_attempt is not None:
+                on_provider_attempt("groq", request.model)
 
             async def chunks():
                 for chunk in stream_factory():
@@ -452,8 +458,13 @@ async def test_provider_stream_error_is_not_cached_and_closes_provider(monkeypat
 
         return chunks()
 
-    async def failing_chat_completion_stream(request):
+    async def failing_chat_completion_stream(
+        request,
+        on_provider_attempt=None,
+    ):
         engine.stream_calls += 1
+        if on_provider_attempt is not None:
+            on_provider_attempt("groq", request.model)
         stream = failing_stream()
 
         async def close():
@@ -474,6 +485,7 @@ async def test_provider_stream_error_is_not_cached_and_closes_provider(monkeypat
     assert semantic_saves == []
     assert engine.closed == 1
     assert logs[0][6] == 502
+    assert logs[0][-1] is True
 
 
 @pytest.mark.asyncio

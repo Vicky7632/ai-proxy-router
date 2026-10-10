@@ -445,6 +445,7 @@ async def stream_with_logging(
     cache_key: str | None = None,
     semantic_lookup: semantic_cache_service.SemanticCacheLookup | None = None,
     cache_request: ChatCompletionRequest | None = None,
+    provider_called: bool = False,
 ) -> AsyncIterator[bytes]:
     assembler = _StreamCompletionAssembler()
     status = 200
@@ -514,7 +515,7 @@ async def stream_with_logging(
                 status,
                 redis_cache_status,
                 semantic_cache_status,
-                True,
+                provider_called,
             )
             if status == 200:
                 background_tasks.add_task(save_request_log, *log_args)
@@ -535,6 +536,17 @@ async def chat_completions(
     redis_cache_status = None
     semantic_cache_status = None
     provider_called = False
+
+    def mark_provider_called(provider_name: str, model: str) -> None:
+        nonlocal provider_called
+        provider_called = True
+        if request.stream:
+            logger.info(
+                "event=provider_invocation request_mode=stream "
+                "provider=%s model=%s",
+                provider_name,
+                model,
+            )
 
     try:
         # Existing auth/rate-limit/budget flow
@@ -667,14 +679,10 @@ async def chat_completions(
             )
 
         if request.stream:
-            provider_called = True
-            logger.info(
-                "event=provider_invocation request_mode=stream "
-                "provider=%s model=%s",
-                router_engine.provider_name(request.model),
-                request.model,
+            routed_stream = await router_engine.chat_completion_stream(
+                request,
+                on_provider_attempt=mark_provider_called,
             )
-            routed_stream = await router_engine.chat_completion_stream(request)
 
             headers = {"X-Cache": "MISS"}
             if remaining_budget is not None:
@@ -693,6 +701,7 @@ async def chat_completions(
                     cache_key,
                     semantic_lookup,
                     request,
+                    provider_called,
                 ),
                 media_type="text/event-stream",
                 background=background_tasks,
@@ -700,8 +709,10 @@ async def chat_completions(
             )
 
         # ---------- PROVIDER CALL ----------
-        provider_called = True
-        routed_completion = await router_engine.chat_completion(request)
+        routed_completion = await router_engine.chat_completion(
+            request,
+            on_provider_attempt=mark_provider_called,
+        )
         response_data = routed_completion.response
         serving_provider = routed_completion.provider
 

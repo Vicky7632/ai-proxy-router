@@ -152,8 +152,14 @@ def install_endpoint_fakes(monkeypatch):
         def resolve(self, model):
             return object(), model
 
-        async def chat_completion(self, completion_request):
+        async def chat_completion(
+            self,
+            completion_request,
+            on_provider_attempt=None,
+        ):
             self.calls += 1
+            if on_provider_attempt is not None:
+                on_provider_attempt("groq", completion_request.model)
             return RoutedCompletion(
                 response={
                     "id": "provider-response",
