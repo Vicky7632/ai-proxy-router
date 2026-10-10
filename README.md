@@ -53,9 +53,12 @@ The goal was to understand how an AI gateway works internally rather than simply
 
 ## Request Flow
 
-The router uses a multi-layer cache before making a provider request.
+The router checks the exact Redis cache first, then the semantic cache before
+making a provider request. A cache hit returns the stored response. A miss or
+lookup error continues through the remaining cache/provider flow; cache
+infrastructure failures do not fail an otherwise routable request.
 
-### 1. Exact Cache Hit
+### 1. Redis Exact-Cache Hit
 
 ```text
 Request
@@ -72,13 +75,27 @@ Return cached response
 
 No embedding generation, semantic search, or provider call is required.
 
-### 2. Semantic Cache Hit
+### 2. Redis Miss or Error
 
 ```text
 Request
    |
    v
-Redis MISS
+Redis lookup
+   |
+   +-- MISS or ERROR
+          |
+          v
+   Semantic cache lookup
+```
+
+A Redis connection failure or invalid cached payload is tracked as an error,
+not as a miss. The request continues to semantic lookup.
+
+### 3. Semantic Cache Hit
+
+```text
+Redis MISS or ERROR
    |
    v
 Generate embedding
@@ -95,29 +112,30 @@ Return existing response
 
 This allows similar requests with different wording to reuse an existing response.
 
-### 3. Cache Miss
+### 4. Semantic Miss or Error
 
 ```text
-Request
+Semantic cache lookup
    |
-   v
-Redis MISS
-   |
-   v
-Semantic Cache MISS
-   |
-   v
-Provider Router
-   |
-   v
-LLM Provider
-   |
-   v
-Store response
-   |
-   v
-Return response
+   +-- MISS or ERROR
+          |
+          v
+   Provider Router
+          |
+          v
+   LLM Provider
+          |
+          v
+   Store successful response in cache
+          |
+          v
+   Return response
 ```
+
+Semantic embedding-generation and database lookup errors are tracked separately
+from misses. They do not prevent the request from continuing to provider
+routing. Successful provider responses are stored in Redis and, when a
+semantic embedding is available, in the semantic cache.
 
 ### Complete Flow
 
@@ -131,22 +149,22 @@ Authentication
 API Key Validation
   |
   v
-Redis Exact Cache
+Redis Exact-Cache Lookup
   |
   v
-Semantic Cache
+Semantic Cache Lookup (after Redis MISS or ERROR)
   |
   v
-Provider Selection
+Provider Selection (after semantic MISS or ERROR)
   |
   v
 LLM Provider
   |
   v
-Response Storage
+Response Storage (successful provider response)
   |
   v
-Analytics
+Request and Cache Analytics
   |
   v
 Client
@@ -282,7 +300,7 @@ Redis exact-cache lookup
                        Save valid completion to Redis
 ```
 
-Streaming requests use the same Redis exact-cache key as non-streaming requests. Redis is checked first; on a miss, the request checks the semantic cache and calls a provider only if both caches miss. Provider chunks are forwarded to the client as they arrive. The router assembles and saves the response only after a valid, complete provider stream; interrupted, failed, or incomplete streams are not cached. Redis and semantic cache hits are returned as OpenAI-compatible SSE.
+Streaming requests use the same Redis exact-cache key as non-streaming requests. Redis is checked first; on a miss or error, the request checks the semantic cache. A semantic miss or error continues to the provider. Provider chunks are forwarded to the client as they arrive. The router assembles and stores the response only after a valid, complete provider stream; interrupted, failed, or incomplete streams are not cached. Successful responses are saved to Redis and, when an embedding is available, the semantic cache. Redis and semantic cache hits are returned as OpenAI-compatible SSE.
 
 ---
 
@@ -297,10 +315,17 @@ Tracked metrics include:
 * Cache hit rate
 * Redis hits
 * Redis misses
+* Redis lookup errors
 * Semantic hits
 * Semantic misses
+* Semantic lookup errors
 * Provider calls
 * Time-window based analytics
+
+Cache lookup errors are recorded separately from misses and fall through to
+the next cache layer or provider routing rather than failing the request.
+The cache hit rate is cache hits divided by all recorded requests; requests
+with lookup errors remain in that denominator.
 
 Example:
 
@@ -309,6 +334,8 @@ Total Requests      = 51
 Cache Hits          = 6
 Redis Hits          = 3
 Semantic Hits       = 3
+Redis Lookup Errors = 0
+Semantic Errors     = 0
 Provider Calls      = 11
 Cache Hit Rate      = 11.8%
 ```
@@ -321,7 +348,9 @@ Example event names and outcomes:
 
 ```text
 event=cache_lookup outcome=redis_miss cache_type=redis
+event=cache_lookup outcome=redis_error cache_type=redis
 event=cache_lookup outcome=semantic_miss cache_type=semantic
+event=cache_lookup outcome=semantic_error cache_type=semantic
 event=provider_invocation request_mode=stream
 event=stream_cache_save cache_type=redis outcome=saved
 event=cache_lookup outcome=redis_hit cache_type=redis
@@ -653,7 +682,7 @@ alembic revision --autogenerate -m "describe change"
 
 ## Testing
 
-The latest full backend test run completed with **133 tests passed** and **41 deprecation warnings**.
+The latest full backend test run completed with **142 passed, 47 warnings, in 7.33 seconds**.
 
 The backend includes automated tests covering core functionality.
 
