@@ -307,8 +307,8 @@ async def test_chat_logs_cache_analytics(
 
     semantic_calls = []
 
-    async def semantic_lookup(prompt, model):
-        semantic_calls.append((prompt, model))
+    async def semantic_lookup(prompt, model, temperature):
+        semantic_calls.append((prompt, model, temperature))
         if scenario == "semantic_hit":
             return SimpleNamespace(
                 prompt=prompt,
@@ -319,6 +319,7 @@ async def test_chat_logs_cache_analytics(
             prompt=prompt,
             embedding=None,
             hit=None,
+            cache_model=model,
         )
 
     async def no_op_semantic_save(*args):
@@ -363,9 +364,10 @@ async def test_chat_logs_cache_analytics(
     assert request_log.provider_called is expected_provider_called
 
 
-async def _semantic_miss(prompt, model):
+async def _semantic_miss(prompt, model, temperature):
     return chat_api.semantic_cache_service.SemanticCacheLookup(
         prompt=prompt,
         embedding=None,
         hit=None,
+        cache_model=model,
     )

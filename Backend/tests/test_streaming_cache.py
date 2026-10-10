@@ -184,8 +184,17 @@ def install_fakes(monkeypatch, stream_factory=None):
     monkeypatch.setattr(chat_api.rate_limiter, "check_limit", allow_rate_limit)
     monkeypatch.setattr(chat_api.budget_service, "check_budget", allow_budget)
 
-    async def semantic_miss(prompt, model):
-        return SimpleNamespace(prompt=prompt, embedding=None, hit=None)
+    async def semantic_miss(prompt, model, temperature):
+        return SimpleNamespace(
+            prompt=prompt,
+            embedding=None,
+            hit=None,
+            cache_model=json.dumps(
+                {"model": model, "temperature": temperature},
+                sort_keys=True,
+                separators=(",", ":"),
+            ),
+        )
 
     monkeypatch.setattr(
         chat_api.semantic_cache_service,
@@ -305,11 +314,16 @@ async def test_streaming_semantic_hit_returns_sse_and_skips_provider(monkeypatch
     _, engine, logs, _ = install_fakes(monkeypatch)
     semantic_response = completion("semantic answer")
 
-    async def semantic_hit(prompt, model):
+    async def semantic_hit(prompt, model, temperature):
         return SimpleNamespace(
             prompt=prompt,
             embedding=None,
             hit=SimpleNamespace(response=semantic_response),
+            cache_model=json.dumps(
+                {"model": model, "temperature": temperature},
+                sort_keys=True,
+                separators=(",", ":"),
+            ),
         )
 
     monkeypatch.setattr(

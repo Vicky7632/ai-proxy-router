@@ -668,11 +668,12 @@ async def test_non_streaming_endpoint_keeps_json_response(monkeypatch):
     assert body == {"id": "ok"}
 
 
-async def _semantic_miss(prompt, model):
+async def _semantic_miss(prompt, model, temperature):
     return chat_api.semantic_cache_service.SemanticCacheLookup(
         prompt=prompt,
         embedding=None,
         hit=None,
+        cache_model=model,
     )
 
 

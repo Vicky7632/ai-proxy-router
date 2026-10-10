@@ -185,7 +185,9 @@ async def test_semantic_hit_skips_provider_and_does_not_resave(monkeypatch):
     assert len(embedding_calls) == 1
     assert len(lookup_calls) == 1
     assert lookup_calls[0][0] is embedding
-    assert lookup_calls[0][1] == "openai/gpt-oss-20b"
+    assert lookup_calls[0][1] == (
+        '{"model":"openai/gpt-oss-20b","temperature":0.7}'
+    )
     assert save_calls == []
     assert engine.calls == 0
 
@@ -240,8 +242,72 @@ async def test_semantic_miss_calls_provider_once_and_saves_same_embedding(
         separators=(",", ":"),
     )
     assert save_calls[0]["response"] == response_json(response)
-    assert save_calls[0]["model"] == "openai/gpt-oss-20b"
+    assert save_calls[0]["model"] == (
+        '{"model":"openai/gpt-oss-20b","temperature":0.7}'
+    )
     assert save_calls[0]["provider"] == "groq"
+
+
+@pytest.mark.asyncio
+async def test_semantic_cache_scopes_entries_by_temperature(monkeypatch):
+    redis, engine = install_endpoint_fakes(monkeypatch)
+    cached_entries = {}
+    lookup_models = []
+
+    async def generate(prompt):
+        return [0.5] * 768
+
+    async def find(vector, model=None):
+        lookup_models.append(model)
+        return cached_entries.get(model)
+
+    async def save_prompt_cache(**kwargs):
+        cached_entries[kwargs["model"]] = SemanticCacheHit(
+            id=len(cached_entries) + 1,
+            prompt=kwargs["prompt"],
+            similarity=1.0,
+            response=kwargs["response"],
+            model=kwargs["model"],
+            provider=kwargs["provider"],
+        )
+
+    monkeypatch.setattr(semantic_cache_service, "generate_embedding", generate)
+    monkeypatch.setattr(
+        semantic_cache_service,
+        "find_similar_prompt_cache",
+        find,
+    )
+    monkeypatch.setattr(
+        semantic_cache_service,
+        "save_prompt_cache",
+        save_prompt_cache,
+    )
+
+    low_temperature = make_request().model_copy(update={"temperature": 0.2})
+    high_temperature = make_request().model_copy(update={"temperature": 0.8})
+
+    first_response = await call_endpoint(low_temperature)
+    second_response = await call_endpoint(high_temperature)
+
+    assert first_response.status_code == second_response.status_code == 200
+    assert first_response.headers["X-Cache"] == "MISS"
+    assert second_response.headers["X-Cache"] == "MISS"
+    assert engine.calls == 2
+    assert len(cached_entries) == 2
+    assert lookup_models[0] != lookup_models[1]
+    assert lookup_models[0] == (
+        '{"model":"openai/gpt-oss-20b","temperature":0.2}'
+    )
+    assert lookup_models[1] == (
+        '{"model":"openai/gpt-oss-20b","temperature":0.8}'
+    )
+
+    redis.values.clear()
+    compatible_response = await call_endpoint(low_temperature)
+
+    assert compatible_response.status_code == 200
+    assert compatible_response.headers["X-Cache"] == "HIT"
+    assert engine.calls == 2
 
 
 @pytest.mark.asyncio

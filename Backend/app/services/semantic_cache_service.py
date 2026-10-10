@@ -1,3 +1,4 @@
+import json
 import logging
 from dataclasses import dataclass
 from typing import Any
@@ -17,12 +18,23 @@ class SemanticCacheLookup:
     prompt: str
     embedding: list[float] | None
     hit: SemanticCacheHit | None
+    cache_model: str
+
+
+def _cache_model_identity(model: str, temperature: float | None) -> str:
+    return json.dumps(
+        {"model": model, "temperature": temperature},
+        sort_keys=True,
+        separators=(",", ":"),
+    )
 
 
 async def lookup_semantic_cache(
     prompt: str,
     model: str,
+    temperature: float | None,
 ) -> SemanticCacheLookup:
+    cache_model = _cache_model_identity(model, temperature)
     try:
         embedding = await generate_embedding(prompt)
     except Exception as error:
@@ -31,21 +43,36 @@ async def lookup_semantic_cache(
             model,
             type(error).__name__,
         )
-        return SemanticCacheLookup(prompt=prompt, embedding=None, hit=None)
+        return SemanticCacheLookup(
+            prompt=prompt,
+            embedding=None,
+            hit=None,
+            cache_model=cache_model,
+        )
 
     try:
-        hit = await find_similar_prompt_cache(embedding, model=model)
+        hit = await find_similar_prompt_cache(embedding, model=cache_model)
     except Exception as error:
         logger.warning(
             "Semantic cache lookup failed model=%s error_type=%s",
             model,
             type(error).__name__,
         )
-        return SemanticCacheLookup(prompt=prompt, embedding=embedding, hit=None)
+        return SemanticCacheLookup(
+            prompt=prompt,
+            embedding=embedding,
+            hit=None,
+            cache_model=cache_model,
+        )
 
     outcome = "hit" if hit is not None else "miss"
     logger.info("Semantic cache lookup outcome=%s model=%s", outcome, model)
-    return SemanticCacheLookup(prompt=prompt, embedding=embedding, hit=hit)
+    return SemanticCacheLookup(
+        prompt=prompt,
+        embedding=embedding,
+        hit=hit,
+        cache_model=cache_model,
+    )
 
 
 async def save_semantic_cache(
@@ -62,7 +89,7 @@ async def save_semantic_cache(
             prompt=lookup.prompt,
             embedding=lookup.embedding,
             response=response,
-            model=model,
+            model=lookup.cache_model,
             provider=provider,
         )
     except Exception as error:

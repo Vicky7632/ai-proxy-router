@@ -615,6 +615,7 @@ async def chat_completions(
         semantic_lookup = await semantic_cache_service.lookup_semantic_cache(
             semantic_prompt,
             request.model,
+            request.temperature,
         )
         semantic_cache_status = (
             "hit" if semantic_lookup.hit is not None else "miss"
