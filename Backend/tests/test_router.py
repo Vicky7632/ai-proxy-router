@@ -637,14 +637,17 @@ async def test_non_streaming_endpoint_keeps_json_response(monkeypatch):
     monkeypatch.setattr(chat_api, "save_request_log", lambda *args: None)
 
     async def cache_miss(request, cache_key=None):
-        return None
+        return chat_api.cache_service.CacheLookupResult(
+            response=None,
+            status="miss",
+        )
 
     async def save_cache(request, response, cache_key=None):
         return None
 
     monkeypatch.setattr(
         chat_api.cache_service,
-        "get_cached_response",
+        "lookup_cached_response",
         cache_miss,
     )
     monkeypatch.setattr(
@@ -721,11 +724,14 @@ async def test_endpoint_logs_no_provider_call_when_all_providers_unhealthy(
     monkeypatch.setattr(chat_api, "router_engine", engine)
 
     async def cache_miss(*args, **kwargs):
-        return None
+        return chat_api.cache_service.CacheLookupResult(
+            response=None,
+            status="miss",
+        )
 
     monkeypatch.setattr(
         chat_api.cache_service,
-        "get_cached_response",
+        "lookup_cached_response",
         cache_miss,
     )
     monkeypatch.setattr(

@@ -13,6 +13,8 @@ const metrics = [
   { key: "cache_hit_rate", label: "Cache hit rate", format: (value) => `${Number(value).toFixed(1)}%` },
   { key: "redis_hits", label: "Redis hits", format: (value) => value.toLocaleString() },
   { key: "semantic_hits", label: "Semantic hits", format: (value) => value.toLocaleString() },
+  { key: "redis_errors", label: "Redis lookup errors", format: (value) => value.toLocaleString() },
+  { key: "semantic_errors", label: "Semantic lookup errors", format: (value) => value.toLocaleString() },
   { key: "provider_calls", label: "Provider calls", format: (value) => value.toLocaleString() },
 ];
 

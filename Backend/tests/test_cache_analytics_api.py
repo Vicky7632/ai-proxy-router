@@ -135,6 +135,8 @@ def test_empty_request_logs_return_zero_counts_and_rate(analytics_client):
         "redis_misses": 0,
         "semantic_hits": 0,
         "semantic_misses": 0,
+        "redis_errors": 0,
+        "semantic_errors": 0,
         "provider_calls": 0,
         "cache_hits": 0,
         "cache_hit_rate": 0.0,
@@ -176,6 +178,8 @@ def test_mixed_cache_outcomes_do_not_count_semantic_hit_as_provider_call(
         "redis_misses": 2,
         "semantic_hits": 1,
         "semantic_misses": 1,
+        "redis_errors": 0,
+        "semantic_errors": 0,
         "provider_calls": 1,
         "cache_hits": 2,
         "cache_hit_rate": pytest.approx(200 / 3),
@@ -240,6 +244,8 @@ def test_cache_analytics_are_isolated_by_api_key_and_time_window(
         "redis_misses": 2,
         "semantic_hits": 1,
         "semantic_misses": 1,
+        "redis_errors": 0,
+        "semantic_errors": 0,
         "provider_calls": 1,
         "cache_hits": 2,
         "cache_hit_rate": pytest.approx(200 / 3),
@@ -250,6 +256,8 @@ def test_cache_analytics_are_isolated_by_api_key_and_time_window(
         "redis_misses": 1,
         "semantic_hits": 0,
         "semantic_misses": 1,
+        "redis_errors": 0,
+        "semantic_errors": 0,
         "provider_calls": 1,
         "cache_hits": 1,
         "cache_hit_rate": 50.0,
@@ -261,6 +269,8 @@ def test_cache_analytics_are_isolated_by_api_key_and_time_window(
         "redis_misses": 1,
         "semantic_hits": 0,
         "semantic_misses": 1,
+        "redis_errors": 0,
+        "semantic_errors": 0,
         "provider_calls": 1,
         "cache_hits": 0,
         "cache_hit_rate": 0.0,
@@ -293,6 +303,35 @@ def test_streaming_provider_request_with_null_cache_outcomes(analytics_client):
         "redis_misses": 0,
         "semantic_hits": 0,
         "semantic_misses": 0,
+        "redis_errors": 0,
+        "semantic_errors": 0,
+        "provider_calls": 1,
+        "cache_hits": 0,
+        "cache_hit_rate": 0.0,
+    }
+
+
+def test_cache_lookup_errors_have_separate_analytics_counts(analytics_client):
+    client, db, raw_api_key, api_key_id = analytics_client
+    add_request(
+        db,
+        api_key_id,
+        redis_cache_status="error",
+        semantic_cache_status="error",
+        provider_called=True,
+    )
+
+    response = get_analytics(client, raw_api_key)
+
+    assert response.status_code == 200
+    assert response.json() == {
+        "total_requests": 1,
+        "redis_hits": 0,
+        "redis_misses": 0,
+        "redis_errors": 1,
+        "semantic_hits": 0,
+        "semantic_misses": 0,
+        "semantic_errors": 1,
         "provider_calls": 1,
         "cache_hits": 0,
         "cache_hit_rate": 0.0,

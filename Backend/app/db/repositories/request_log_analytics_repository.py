@@ -12,7 +12,7 @@ def get_cache_analytics_counts(
     api_key_id: UUID,
     from_datetime: datetime | None = None,
     to_datetime: datetime | None = None,
-) -> tuple[int, int, int, int, int, int]:
+) -> tuple[int, int, int, int, int, int, int, int]:
     query = db.query(
         func.count(RequestLog.id),
         func.count(
@@ -33,6 +33,16 @@ def get_cache_analytics_counts(
         func.count(
             case(
                 (RequestLog.semantic_cache_status == "miss", RequestLog.id),
+            )
+        ),
+        func.count(
+            case(
+                (RequestLog.redis_cache_status == "error", RequestLog.id),
+            )
+        ),
+        func.count(
+            case(
+                (RequestLog.semantic_cache_status == "error", RequestLog.id),
             )
         ),
         func.count(

@@ -20,6 +20,7 @@ from app.db.base import Base
 class CacheOutcome(str, Enum):
     HIT = "hit"
     MISS = "miss"
+    ERROR = "error"
 
 
 class RequestLog(Base):
@@ -27,11 +28,11 @@ class RequestLog(Base):
 
     __table_args__ = (
         CheckConstraint(
-            "redis_cache_status IS NULL OR redis_cache_status IN ('hit', 'miss')",
+            "redis_cache_status IS NULL OR redis_cache_status IN ('hit', 'miss', 'error')",
             name="ck_requests_log_redis_cache_status",
         ),
         CheckConstraint(
-            "semantic_cache_status IS NULL OR semantic_cache_status IN ('hit', 'miss')",
+            "semantic_cache_status IS NULL OR semantic_cache_status IN ('hit', 'miss', 'error')",
             name="ck_requests_log_semantic_cache_status",
         ),
         Index("ix_requests_log_created_at", "created_at"),
@@ -46,8 +47,8 @@ class RequestLog(Base):
     latency_ms = Column(Integer, nullable=True)
     status = Column(String, nullable=False)
     cache_hit = Column(Boolean, default=False)
-    redis_cache_status = Column(String(4), nullable=True)
-    semantic_cache_status = Column(String(4), nullable=True)
+    redis_cache_status = Column(String(5), nullable=True)
+    semantic_cache_status = Column(String(5), nullable=True)
     provider_called = Column(Boolean, nullable=True)
     cost = Column(Float, default=0.0)
     created_at = Column(DateTime, default=datetime.utcnow)

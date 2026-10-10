@@ -2,7 +2,8 @@ import asyncio
 import hashlib
 import json
 import logging
-from typing import Any
+from dataclasses import dataclass
+from typing import Any, Literal
 
 from redis.exceptions import RedisError
 
@@ -12,6 +13,12 @@ from app.services.redis_service import redis_client
 CACHE_KEY_PREFIX = "cache:v1:"
 CACHE_TTL_SECONDS = 3600
 logger = logging.getLogger(__name__)
+
+
+@dataclass(frozen=True)
+class CacheLookupResult:
+    response: dict[str, Any] | None
+    status: Literal["hit", "miss", "error"]
 
 
 def normalize_request(
@@ -66,14 +73,16 @@ def _get_legacy_cache_keys(
     return keys
 
 
-def _get_cached_response(key: str) -> dict[str, Any] | None:
+def _get_cached_response_result(
+    key: str,
+) -> tuple[dict[str, Any] | None, bool]:
     try:
         encoded = redis_client.get(key)
     except RedisError:
         logger.exception("Redis cache lookup failed key=%s", key)
-        return None
+        return None, True
     if encoded is None:
-        return None
+        return None, False
     try:
         response = json.loads(encoded)
     except (TypeError, UnicodeDecodeError, json.JSONDecodeError):
@@ -82,34 +91,62 @@ def _get_cached_response(key: str) -> dict[str, Any] | None:
             redis_client.delete(key)
         except RedisError:
             logger.exception("Failed to delete invalid cache entry key=%s", key)
-        return None
+        return None, True
     if not isinstance(response, dict):
         logger.warning("Discarding non-object cached response key=%s", key)
         try:
             redis_client.delete(key)
         except RedisError:
             logger.exception("Failed to delete invalid cache entry key=%s", key)
-        return None
+        return None, True
+    return response, False
+
+
+def _get_cached_response(key: str) -> dict[str, Any] | None:
+    response, _ = _get_cached_response_result(key)
     return response
+
+
+async def lookup_cached_response(
+    request: ChatCompletionRequest | dict[str, Any],
+    cache_key: str | None = None,
+) -> CacheLookupResult:
+    current_key = get_cache_key(request)
+    key = cache_key or current_key
+    response, had_error = await asyncio.to_thread(
+        _get_cached_response_result,
+        key,
+    )
+    if response is not None:
+        return CacheLookupResult(response=response, status="hit")
+    if key != current_key:
+        return CacheLookupResult(
+            response=None,
+            status="error" if had_error else "miss",
+        )
+
+    for legacy_key in _get_legacy_cache_keys(request):
+        if legacy_key == current_key:
+            continue
+        response, key_had_error = await asyncio.to_thread(
+            _get_cached_response_result,
+            legacy_key,
+        )
+        had_error = had_error or key_had_error
+        if response is not None:
+            return CacheLookupResult(response=response, status="hit")
+    return CacheLookupResult(
+        response=None,
+        status="error" if had_error else "miss",
+    )
 
 
 async def get_cached_response(
     request: ChatCompletionRequest | dict[str, Any],
     cache_key: str | None = None,
 ) -> dict[str, Any] | None:
-    current_key = get_cache_key(request)
-    key = cache_key or current_key
-    response = await asyncio.to_thread(_get_cached_response, key)
-    if response is not None or key != current_key:
-        return response
-
-    for legacy_key in _get_legacy_cache_keys(request):
-        if legacy_key == current_key:
-            continue
-        response = await asyncio.to_thread(_get_cached_response, legacy_key)
-        if response is not None:
-            return response
-    return None
+    result = await lookup_cached_response(request, cache_key)
+    return result.response
 
 
 def _save_cached_response(

@@ -13,14 +13,19 @@ def test_request_log_exposes_structured_cache_analytics_fields():
         model="model-a",
         status="200",
         redis_cache_status=CacheOutcome.MISS,
-        semantic_cache_status=CacheOutcome.HIT,
+        semantic_cache_status=CacheOutcome.ERROR,
         provider_called=False,
         latency_ms=12,
     )
 
     assert request_log.id is None
     assert request_log.redis_cache_status == CacheOutcome.MISS
-    assert request_log.semantic_cache_status == CacheOutcome.HIT
+    assert request_log.semantic_cache_status == CacheOutcome.ERROR
+    assert "error" in str(next(
+        constraint.sqltext
+        for constraint in RequestLog.__table__.constraints
+        if constraint.name == "ck_requests_log_semantic_cache_status"
+    ))
     assert request_log.provider_called is False
     assert RequestLog.model.property.columns[0].name == "model"
     assert RequestLog.latency_ms.property.columns[0].name == "latency_ms"
@@ -44,6 +49,6 @@ def test_request_log_analytics_constraints_and_time_index_compile_for_postgres()
     create_table_statement = str(
         CreateTable(RequestLog.__table__).compile(dialect=postgresql.dialect())
     )
-    assert "redis_cache_status VARCHAR(4)" in create_table_statement
-    assert "semantic_cache_status VARCHAR(4)" in create_table_statement
+    assert "redis_cache_status VARCHAR(5)" in create_table_statement
+    assert "semantic_cache_status VARCHAR(5)" in create_table_statement
     assert "provider_called BOOLEAN" in create_table_statement

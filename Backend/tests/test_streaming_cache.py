@@ -189,6 +189,7 @@ def install_fakes(monkeypatch, stream_factory=None):
             prompt=prompt,
             embedding=None,
             hit=None,
+            status="miss",
             cache_model=json.dumps(
                 {"model": model, "temperature": temperature},
                 sort_keys=True,
@@ -325,6 +326,7 @@ async def test_streaming_semantic_hit_returns_sse_and_skips_provider(monkeypatch
             prompt=prompt,
             embedding=None,
             hit=SimpleNamespace(response=semantic_response),
+            status="hit",
             cache_model=json.dumps(
                 {"model": model, "temperature": temperature},
                 sort_keys=True,

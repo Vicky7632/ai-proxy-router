@@ -468,6 +468,12 @@ async def test_database_semantic_cache_isolates_temperature(
 @pytest.mark.asyncio
 async def test_embedding_failure_does_not_block_provider(monkeypatch):
     _, engine = install_endpoint_fakes(monkeypatch)
+    request_logs = []
+    monkeypatch.setattr(
+        chat_api,
+        "save_request_log",
+        lambda *args: request_logs.append(args),
+    )
 
     async def fail_embedding(prompt):
         raise HTTPException(status_code=502, detail="embedding unavailable")
@@ -495,10 +501,12 @@ async def test_embedding_failure_does_not_block_provider(monkeypatch):
     )
 
     response = await call_endpoint()
+    await response.background()
 
     assert response.status_code == 200
     assert response_json(response)["id"] == "provider-response"
     assert engine.calls == 1
+    assert request_logs[0][8] == "error"
 
 
 @pytest.mark.asyncio
@@ -506,6 +514,12 @@ async def test_semantic_lookup_failure_does_not_block_provider(monkeypatch):
     _, engine = install_endpoint_fakes(monkeypatch)
     embedding = [0.1] * 768
     save_calls = []
+    request_logs = []
+    monkeypatch.setattr(
+        chat_api,
+        "save_request_log",
+        lambda *args: request_logs.append(args),
+    )
 
     async def generate(prompt):
         return embedding
@@ -529,11 +543,15 @@ async def test_semantic_lookup_failure_does_not_block_provider(monkeypatch):
     )
 
     response = await call_endpoint()
+    await response.background()
 
     assert response.status_code == 200
     assert response_json(response)["id"] == "provider-response"
     assert engine.calls == 1
     assert len(save_calls) == 1
+    assert request_logs[0][7] == "miss"
+    assert request_logs[0][8] == "error"
+    assert request_logs[0][9] is True
 
 
 @pytest.mark.asyncio

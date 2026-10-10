@@ -16,6 +16,8 @@ class CacheAnalytics:
     redis_misses: int
     semantic_hits: int
     semantic_misses: int
+    redis_errors: int
+    semantic_errors: int
     provider_calls: int
     cache_hits: int
     cache_hit_rate: float
@@ -33,6 +35,8 @@ def get_cache_analytics(
         redis_misses,
         semantic_hits,
         semantic_misses,
+        redis_errors,
+        semantic_errors,
         provider_calls,
     ) = get_cache_analytics_counts(
         db,
@@ -51,6 +55,8 @@ def get_cache_analytics(
         redis_misses=redis_misses,
         semantic_hits=semantic_hits,
         semantic_misses=semantic_misses,
+        redis_errors=redis_errors,
+        semantic_errors=semantic_errors,
         provider_calls=provider_calls,
         cache_hits=cache_hits,
         cache_hit_rate=cache_hit_rate,

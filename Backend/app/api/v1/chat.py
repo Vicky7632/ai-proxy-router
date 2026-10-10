@@ -560,13 +560,14 @@ async def chat_completions(
         request = request.model_copy(update={"model": resolved_model})
 
         cache_key = cache_service.get_cache_key(request)
-        cached_response = await cache_service.get_cached_response(
+        cache_lookup = await cache_service.lookup_cached_response(
             request=request,
             cache_key=cache_key,
         )
+        cached_response = cache_lookup.response
+        redis_cache_status = cache_lookup.status
 
         if cached_response is not None:
-            redis_cache_status = "hit"
             logger.info(
                 "event=cache_lookup outcome=redis_hit cache_type=redis "
                 "request_mode=%s model=%s",
@@ -612,12 +613,12 @@ async def chat_completions(
             )
 
         logger.info(
-            "event=cache_lookup outcome=redis_miss cache_type=redis "
+            "event=cache_lookup outcome=redis_%s cache_type=redis "
             "request_mode=%s model=%s",
+            redis_cache_status,
             "stream" if request.stream else "non_stream",
             request.model,
         )
-        redis_cache_status = "miss"
         semantic_prompt = json.dumps(
             [
                 {"role": message.role, "content": message.content}
@@ -632,7 +633,9 @@ async def chat_completions(
             request.temperature,
         )
         semantic_cache_status = (
-            "hit" if semantic_lookup.hit is not None else "miss"
+            "hit"
+            if semantic_lookup.hit is not None
+            else semantic_lookup.status
         )
         logger.info(
             "event=cache_lookup outcome=%s cache_type=semantic "

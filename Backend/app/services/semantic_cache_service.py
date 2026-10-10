@@ -1,7 +1,7 @@
 import json
 import logging
 from dataclasses import dataclass
-from typing import Any
+from typing import Any, Literal
 
 from app.services.embedding_service import generate_embedding
 from app.services.prompt_cache_service import (
@@ -19,6 +19,7 @@ class SemanticCacheLookup:
     embedding: list[float] | None
     hit: SemanticCacheHit | None
     cache_model: str
+    status: Literal["hit", "miss", "error"] = "miss"
 
 
 def _cache_model_identity(model: str, temperature: float | None) -> str:
@@ -48,6 +49,7 @@ async def lookup_semantic_cache(
             embedding=None,
             hit=None,
             cache_model=cache_model,
+            status="error",
         )
 
     try:
@@ -63,6 +65,7 @@ async def lookup_semantic_cache(
             embedding=embedding,
             hit=None,
             cache_model=cache_model,
+            status="error",
         )
 
     outcome = "hit" if hit is not None else "miss"
@@ -72,6 +75,7 @@ async def lookup_semantic_cache(
         embedding=embedding,
         hit=hit,
         cache_model=cache_model,
+        status=outcome,
     )
 
 

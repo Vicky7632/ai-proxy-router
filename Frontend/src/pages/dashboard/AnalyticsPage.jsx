@@ -12,8 +12,10 @@ const fields = [
   ["cache_hits", "Cache hits"],
   ["redis_hits", "Redis hits"],
   ["redis_misses", "Redis misses"],
+  ["redis_errors", "Redis lookup errors"],
   ["semantic_hits", "Semantic hits"],
   ["semantic_misses", "Semantic misses"],
+  ["semantic_errors", "Semantic lookup errors"],
   ["provider_calls", "Provider calls"],
 ];
 
