@@ -143,7 +143,7 @@ function ApiKeysPage() {
           <h2 className="text-[14px] font-semibold tracking-tight text-slate-100">Create a key</h2>
           <p className="mt-1.5 text-[13px] leading-5 text-slate-400">
             The secret is shown once. It will be held in memory for this browser
-            tab only.
+            tab and saved in session storage so it survives reloads in this tab.
           </p>
         </div>
         <form
@@ -210,7 +210,7 @@ function ApiKeysPage() {
           </h2>
           <p className="mt-1.5 text-[13px] leading-5 text-slate-400">
             Use a proxy key for live analytics, provider health, and Playground.
-            It is verified before use and never saved to storage.
+            It is verified before use and saved only for this browser tab.
           </p>
         </div>
         <form

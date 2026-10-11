@@ -42,7 +42,7 @@ def make_request(stream=True):
     )
 
 
-def completion(content="cached answer"):
+def completion(content="cached answer", finish_reason="stop"):
     return {
         "id": "chatcmpl-cached",
         "object": "chat.completion",
@@ -52,7 +52,7 @@ def completion(content="cached answer"):
             {
                 "index": 0,
                 "message": {"role": "assistant", "content": content},
-                "finish_reason": "stop",
+                "finish_reason": finish_reason,
             }
         ],
         "usage": {
@@ -285,6 +285,17 @@ def parse_sse(chunks):
     return events
 
 
+def streamed_content(events):
+    return "".join(
+        choice.get("delta", {}).get("content", "")
+        for event in events
+        for choice in event.get("choices", [])
+        if isinstance(choice, dict)
+        and isinstance(choice.get("delta"), dict)
+        and isinstance(choice["delta"].get("content", ""), str)
+    )
+
+
 @pytest.mark.asyncio
 async def test_streaming_redis_hit_returns_openai_sse_without_provider(monkeypatch):
     redis, engine, logs, _ = install_fakes(monkeypatch)
@@ -319,7 +330,14 @@ async def test_streaming_redis_hit_returns_openai_sse_without_provider(monkeypat
 @pytest.mark.asyncio
 async def test_streaming_semantic_hit_returns_sse_and_skips_provider(monkeypatch):
     _, engine, logs, _ = install_fakes(monkeypatch)
-    semantic_response = completion("semantic answer")
+    markdown_table = (
+        "## High-Level Design (HLD) vs. Low-Level Design (LLD)\n\n"
+        "| Feature | High-Level Design (HLD) | Low-Level Design (LLD) |\n"
+        "| --- | --- | --- |\n"
+        "| Focus | Overall architecture | Implementation details |\n"
+        "| Scope | Components and interfaces | Classes and algorithms |"
+    )
+    semantic_response = completion(markdown_table)
 
     async def semantic_hit(prompt, model, temperature):
         return SimpleNamespace(
@@ -344,9 +362,7 @@ async def test_streaming_semantic_hit_returns_sse_and_skips_provider(monkeypatch
 
     assert response.headers["X-Cache"] == "HIT"
     assert chunks[-1] == b"data: [DONE]\n\n"
-    assert parse_sse(chunks)[0]["choices"][0]["delta"]["content"] == (
-        "semantic answer"
-    )
+    assert streamed_content(parse_sse(chunks)) == markdown_table
     assert engine.stream_calls == 0
     assert logs[0][7:] == ("miss", "hit", False)
 
@@ -414,6 +430,173 @@ async def test_streaming_miss_is_cached_and_reused_as_stream_hit(
         caplog.text
     )
     assert "Hello" not in caplog.text
+
+
+@pytest.mark.asyncio
+async def test_multiline_markdown_stream_is_assembled_and_replayed_from_redis(
+    monkeypatch,
+):
+    markdown_table = (
+        "## High-Level Design (HLD) vs. Low-Level Design (LLD)\n\n"
+        "| Feature | High-Level Design (HLD) | Low-Level Design (LLD) |\n"
+        "| --- | --- | --- |\n"
+        "| Focus | Overall architecture | Implementation details |\n"
+        "| Scope | Components and interfaces | Classes and algorithms |"
+    )
+    split_at = markdown_table.index("| ---")
+    provider_chunks = [
+        sse_event(
+            {
+                "id": "chatcmpl-provider",
+                "object": "chat.completion.chunk",
+                "created": 456,
+                "model": "openai/gpt-oss-20b",
+                "choices": [
+                    {
+                        "index": 0,
+                        "delta": {
+                            "role": "assistant",
+                            "content": markdown_table[:split_at],
+                        },
+                        "finish_reason": None,
+                    }
+                ],
+            }
+        ),
+        sse_event(
+            {
+                "id": "chatcmpl-provider",
+                "object": "chat.completion.chunk",
+                "created": 456,
+                "model": "openai/gpt-oss-20b",
+                "choices": [
+                    {
+                        "index": 0,
+                        "delta": {"content": markdown_table[split_at:]},
+                        "finish_reason": None,
+                    }
+                ],
+            }
+        ),
+        sse_event(
+            {
+                "id": "chatcmpl-provider",
+                "object": "chat.completion.chunk",
+                "created": 456,
+                "model": "openai/gpt-oss-20b",
+                "choices": [
+                    {"index": 0, "delta": {}, "finish_reason": "stop"}
+                ],
+            }
+        ),
+        b"data: [DONE]\n\n",
+    ]
+    _, engine, _, semantic_saves = install_fakes(
+        monkeypatch,
+        stream_factory=lambda: provider_chunks,
+    )
+
+    response = await call_endpoint()
+    streamed_chunks = await consume(response)
+
+    assert streamed_chunks == provider_chunks
+    assert semantic_saves[0][0]["choices"][0]["message"]["content"] == (
+        markdown_table
+    )
+
+    cached_response = await call_endpoint()
+    cached_chunks = await consume(cached_response)
+    events = parse_sse(cached_chunks)
+
+    assert cached_response.headers["X-Cache"] == "HIT"
+    assert streamed_content(events) == markdown_table
+    assert cached_chunks[-1] == b"data: [DONE]\n\n"
+    assert engine.stream_calls == 1
+
+
+@pytest.mark.asyncio
+async def test_length_finished_response_is_not_cached_or_replayed(monkeypatch, caplog):
+    caplog.set_level("INFO")
+    redis, engine, _, semantic_saves = install_fakes(
+        monkeypatch,
+        stream_factory=provider_events,
+    )
+    partial = completion("partial markdown table", finish_reason="length")
+    cache_key = cache_service.get_cache_key(make_request(stream=False))
+    redis.values[cache_key] = json.dumps(partial)
+
+    response = await call_endpoint()
+    streamed_chunks = await consume(response)
+
+    assert response.headers["X-Cache"] == "MISS"
+    assert streamed_chunks == provider_events()
+    assert engine.stream_calls == 1
+    assert semantic_saves
+    assert all(
+        json.loads(value)["choices"][0]["finish_reason"] != "length"
+        for value in redis.values.values()
+    )
+    assert "event=cache_entry_rejected cache_type=redis" in caplog.text
+    assert "event=stream_completion" in caplog.text
+
+
+@pytest.mark.asyncio
+async def test_provider_length_finish_reason_is_not_saved_to_either_cache(
+    monkeypatch,
+    caplog,
+):
+    caplog.set_level("INFO")
+    redis, engine, logs, semantic_saves = install_fakes(
+        monkeypatch,
+        stream_factory=lambda: [
+            sse_event(
+                {
+                    "id": "chatcmpl-provider",
+                    "object": "chat.completion.chunk",
+                    "created": 456,
+                    "model": "openai/gpt-oss-20b",
+                    "choices": [
+                        {
+                            "index": 0,
+                            "delta": {
+                                "role": "assistant",
+                                "content": "partial markdown table",
+                            },
+                            "finish_reason": None,
+                        }
+                    ],
+                }
+            ),
+            sse_event(
+                {
+                    "id": "chatcmpl-provider",
+                    "object": "chat.completion.chunk",
+                    "created": 456,
+                    "model": "openai/gpt-oss-20b",
+                    "choices": [
+                        {
+                            "index": 0,
+                            "delta": {},
+                            "finish_reason": "length",
+                        }
+                    ],
+                }
+            ),
+            b"data: [DONE]\n\n",
+        ],
+    )
+
+    response = await call_endpoint()
+    await consume(response)
+
+    assert engine.stream_calls == 1
+    assert redis.values == {}
+    assert semantic_saves == []
+    assert logs[0][6] == 200
+    assert "finish_reason=length" in caplog.text
+    assert "event=stream_cache_skipped reason=finish_reason_length" in (
+        caplog.text
+    )
 
 
 @pytest.mark.asyncio

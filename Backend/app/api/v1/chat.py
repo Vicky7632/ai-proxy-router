@@ -460,28 +460,50 @@ async def stream_with_logging(
         stream_closed = True
         await routed_stream.stream.close()
         response_data = assembler.completion()
+        if response_data is not None:
+            metrics = cache_service.completion_diagnostics(response_data)
+            cacheable = (
+                status == 200
+                and not cache_service.has_length_finish_reason(response_data)
+            )
+            logger.info(
+                "event=stream_completion provider=%s model=%s "
+                "finish_reason=%s content_chars=%s cacheable=%s",
+                routed_stream.provider,
+                assembler.model or routed_stream.model,
+                metrics["finish_reasons"],
+                metrics["content_characters"],
+                cacheable,
+            )
         if status == 200 and response_data is not None:
-            if cache_key is not None and cache_request is not None:
-                cache_saved = await cache_service.save_cached_response(
-                    request=cache_request,
-                    response=response_data,
-                    cache_key=cache_key,
-                )
-                if cache_saved:
-                    logger.info(
-                        "event=stream_cache_save cache_type=redis "
-                        "outcome=saved model=%s provider=%s",
-                        cache_request.model,
+            if cacheable:
+                if cache_key is not None and cache_request is not None:
+                    cache_saved = await cache_service.save_cached_response(
+                        request=cache_request,
+                        response=response_data,
+                        cache_key=cache_key,
+                    )
+                    if cache_saved:
+                        logger.info(
+                            "event=stream_cache_save cache_type=redis "
+                            "outcome=saved model=%s provider=%s",
+                            cache_request.model,
+                            routed_stream.provider,
+                        )
+                if semantic_lookup is not None:
+                    await semantic_cache_service.save_semantic_cache(
+                        semantic_lookup,
+                        response_data,
+                        cache_request.model
+                        if cache_request is not None
+                        else routed_stream.model,
                         routed_stream.provider,
                     )
-            if semantic_lookup is not None:
-                await semantic_cache_service.save_semantic_cache(
-                    semantic_lookup,
-                    response_data,
-                    cache_request.model
-                    if cache_request is not None
-                    else routed_stream.model,
-                    routed_stream.provider,
+            else:
+                logger.warning(
+                    "event=stream_cache_skipped reason=finish_reason_length "
+                    "content_chars=%s",
+                    metrics["content_characters"],
                 )
     except HTTPException as error:
         status = error.status_code
@@ -568,11 +590,14 @@ async def chat_completions(
         redis_cache_status = cache_lookup.status
 
         if cached_response is not None:
+            metrics = cache_service.completion_diagnostics(cached_response)
             logger.info(
                 "event=cache_lookup outcome=redis_hit cache_type=redis "
-                "request_mode=%s model=%s",
+                "request_mode=%s model=%s finish_reason=%s content_chars=%s",
                 "stream" if request.stream else "non_stream",
                 request.model,
+                metrics["finish_reasons"],
+                metrics["content_characters"],
             )
             headers = {"X-Cache": "HIT"}
             if remaining_budget is not None:
@@ -645,6 +670,15 @@ async def chat_completions(
             request.model,
         )
         if semantic_lookup.hit is not None:
+            metrics = cache_service.completion_diagnostics(
+                semantic_lookup.hit.response
+            )
+            logger.info(
+                "event=cache_hit cache_type=semantic finish_reason=%s "
+                "content_chars=%s",
+                metrics["finish_reasons"],
+                metrics["content_characters"],
+            )
             headers = {"X-Cache": "HIT"}
             if remaining_budget is not None:
                 headers["X-Remaining-Budget"] = format_budget_header(

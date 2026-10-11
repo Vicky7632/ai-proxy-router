@@ -1,3 +1,4 @@
+import asyncio
 import json
 import math
 import os
@@ -236,6 +237,135 @@ async def test_redis_hit_skips_embedding_semantic_lookup_and_provider(monkeypatc
     assert response.headers["X-Cache"] == "HIT"
     assert response.headers["X-Remaining-Budget"] == "3.42"
     assert engine.calls == 0
+
+
+@pytest.mark.asyncio
+async def test_exact_repeated_prompt_uses_redis_hit_and_logs_once_per_request(
+    monkeypatch,
+    prompt_cache_database,
+):
+    redis, engine = install_endpoint_fakes(monkeypatch)
+    monkeypatch.setattr(
+        semantic_cache_service,
+        "generate_embedding",
+        lambda prompt: asyncio.sleep(0, result=[1.0] + [0.0] * 767),
+    )
+    request_logs = []
+    monkeypatch.setattr(
+        chat_api,
+        "save_request_log",
+        lambda *args: request_logs.append(args),
+    )
+
+    first = await call_endpoint(make_request("Explain HLD and LLD"))
+    await first.background()
+    second = await call_endpoint(make_request("Explain HLD and LLD"))
+    await second.background()
+
+    assert first.headers["X-Cache"] == "MISS"
+    assert second.headers["X-Cache"] == "HIT"
+    assert engine.calls == 1
+    assert len(request_logs) == 2
+    assert request_logs[0][7:] == ("miss", "miss", True)
+    assert request_logs[1][7:] == ("hit", None, False)
+    assert len(redis.values) == 1
+
+
+@pytest.mark.asyncio
+async def test_semantically_similar_prompt_uses_semantic_hit_without_provider(
+    monkeypatch,
+    prompt_cache_database,
+):
+    redis, engine = install_endpoint_fakes(monkeypatch)
+    model = '{"model":"openai/gpt-oss-20b","temperature":0.7}'
+    response = {
+        "id": "complete-cached-response",
+        "model": "openai/gpt-oss-20b",
+        "choices": [
+            {
+                "message": {"role": "assistant", "content": "complete answer"},
+                "finish_reason": "stop",
+            }
+        ],
+    }
+    prompt_cache_repository.insert_prompt_cache(
+        prompt="Explain high-level and low-level design",
+        embedding=[1.0] + [0.0] * 767,
+        response=response,
+        model=model,
+        provider="groq",
+    )
+    similar_embedding = [0.95, math.sqrt(1 - 0.95**2)] + [0.0] * 766
+    monkeypatch.setattr(
+        semantic_cache_service,
+        "generate_embedding",
+        lambda prompt: asyncio.sleep(0, result=similar_embedding),
+    )
+    request_logs = []
+    monkeypatch.setattr(
+        chat_api,
+        "save_request_log",
+        lambda *args: request_logs.append(args),
+    )
+
+    result = await call_endpoint(make_request("Compare HLD with LLD"))
+    await result.background()
+
+    assert result.headers["X-Cache"] == "HIT"
+    assert response_json(result)["id"] == "complete-cached-response"
+    assert engine.calls == 0
+    assert len(request_logs) == 1
+    assert request_logs[0][7:] == ("miss", "hit", False)
+    assert redis.values == {}
+
+
+@pytest.mark.asyncio
+async def test_unrelated_prompt_below_similarity_threshold_calls_provider(
+    monkeypatch,
+    prompt_cache_database,
+):
+    _, engine = install_endpoint_fakes(monkeypatch)
+    model = '{"model":"openai/gpt-oss-20b","temperature":0.7}'
+    prompt_cache_repository.insert_prompt_cache(
+        prompt="Explain high-level and low-level design",
+        embedding=[1.0] + [0.0] * 767,
+        response={
+            "id": "complete-cached-response",
+            "model": "openai/gpt-oss-20b",
+            "choices": [
+                {
+                    "message": {
+                        "role": "assistant",
+                        "content": "complete answer",
+                    },
+                    "finish_reason": "stop",
+                }
+            ],
+        },
+        model=model,
+        provider="groq",
+    )
+    unrelated_embedding = [0.0, 1.0] + [0.0] * 766
+    monkeypatch.setattr(
+        semantic_cache_service,
+        "generate_embedding",
+        lambda prompt: asyncio.sleep(0, result=unrelated_embedding),
+    )
+    request_logs = []
+    monkeypatch.setattr(
+        chat_api,
+        "save_request_log",
+        lambda *args: request_logs.append(args),
+    )
+
+    result = await call_endpoint(make_request("What is the capital of France?"))
+    await result.background()
+
+    assert result.headers["X-Cache"] == "MISS"
+    assert response_json(result)["id"] == "provider-response"
+    assert engine.calls == 1
+    assert len(request_logs) == 1
+    assert request_logs[0][7:] == ("miss", "miss", True)
 
 
 @pytest.mark.asyncio

@@ -48,6 +48,38 @@ def get_cache_key(
     return f"{CACHE_KEY_PREFIX}{digest}"
 
 
+def completion_diagnostics(response: dict[str, Any]) -> dict[str, Any]:
+    choices = response.get("choices")
+    if not isinstance(choices, list):
+        return {"content_characters": 0, "finish_reasons": "unknown"}
+
+    content_characters = 0
+    finish_reasons = []
+    for choice in choices:
+        if not isinstance(choice, dict):
+            continue
+        finish_reason = choice.get("finish_reason")
+        if isinstance(finish_reason, str) and finish_reason not in finish_reasons:
+            finish_reasons.append(finish_reason)
+        message = choice.get("message")
+        content = message.get("content") if isinstance(message, dict) else None
+        if isinstance(content, str):
+            content_characters += len(content)
+
+    return {
+        "content_characters": content_characters,
+        "finish_reasons": ",".join(finish_reasons) or "unknown",
+    }
+
+
+def has_length_finish_reason(response: dict[str, Any]) -> bool:
+    choices = response.get("choices")
+    return isinstance(choices, list) and any(
+        isinstance(choice, dict) and choice.get("finish_reason") == "length"
+        for choice in choices
+    )
+
+
 def _get_legacy_cache_keys(
     request: ChatCompletionRequest | dict[str, Any],
 ) -> list[str]:
@@ -99,6 +131,14 @@ def _get_cached_response_result(
         except RedisError:
             logger.exception("Failed to delete invalid cache entry key=%s", key)
         return None, True
+    if has_length_finish_reason(response):
+        metrics = completion_diagnostics(response)
+        logger.warning(
+            "event=cache_entry_rejected cache_type=redis "
+            "reason=finish_reason_length content_chars=%s",
+            metrics["content_characters"],
+        )
+        return None, False
     return response, False
 
 
@@ -154,6 +194,19 @@ def _save_cached_response(
     response: dict[str, Any],
     ttl: int,
 ) -> bool:
+    metrics = completion_diagnostics(response)
+    if has_length_finish_reason(response):
+        logger.warning(
+            "event=cache_save_skipped cache_type=redis "
+            "reason=finish_reason_length content_chars=%s",
+            metrics["content_characters"],
+        )
+        return False
+    logger.info(
+        "event=cache_save cache_type=redis finish_reason=%s content_chars=%s",
+        metrics["finish_reasons"],
+        metrics["content_characters"],
+    )
     encoded = json.dumps(
         response,
         sort_keys=True,

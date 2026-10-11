@@ -1,4 +1,5 @@
 import api, { getErrorMessage } from "./api";
+import { readSseStream } from "./sse";
 
 async function readErrorResponse(response) {
   try {
@@ -40,75 +41,15 @@ export const chatService = {
       throw new Error("The completion stream was unavailable.");
     }
 
-    const reader = response.body.getReader();
-    const decoder = new TextDecoder();
-    let buffer = "";
-    let finished = false;
-
-    async function processLine(line) {
-      const trimmedLine = line.endsWith("\r") ? line.slice(0, -1) : line;
-      if (!trimmedLine.startsWith("data:")) {
-        return;
-      }
-
-      const payload = trimmedLine.slice(5).trim();
-      if (!payload) {
-        return;
-      }
-      if (payload === "[DONE]") {
-        finished = true;
-        return;
-      }
-
-      let event;
-      try {
-        event = JSON.parse(payload);
-      } catch {
-        // Ignore malformed or non-JSON SSE data and continue reading.
-        return;
-      }
-      const text = event?.choices?.[0]?.delta?.content;
-      if (typeof text === "string" && text.length > 0) {
-        onChunk(text);
-        await new Promise((resolve) => requestAnimationFrame(resolve));
-      }
-    }
-
-    try {
-      while (!finished) {
-        const { value, done } = await reader.read();
-        if (done) {
-          break;
-        }
-
-        buffer += decoder.decode(value, { stream: true });
-        const lines = buffer.split("\n");
-        buffer = lines.pop() || "";
-        for (const line of lines) {
-          await processLine(line);
-          if (finished) {
-            break;
-          }
-        }
-      }
-
-      if (!finished) {
-        buffer += decoder.decode();
-        const remainingLines = buffer.split("\n");
-        buffer = remainingLines.pop() || "";
-        for (const line of remainingLines) {
-          await processLine(line);
-          if (finished) {
-            break;
-          }
-        }
-        if (!finished && buffer) {
-          await processLine(buffer);
-        }
-      }
-      onDone();
-    } finally {
-      reader.releaseLock();
-    }
+    const streamStats = await readSseStream(response.body, async (text) => {
+      onChunk(text);
+      await new Promise((resolve) => requestAnimationFrame(resolve));
+    });
+    console.info("SSE stream completed", {
+      receivedDone: true,
+      cacheStatus: response.headers.get("X-Cache") || "UNKNOWN",
+      ...streamStats,
+    });
+    onDone();
   },
 };

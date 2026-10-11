@@ -1,4 +1,5 @@
 import asyncio
+import logging
 import math
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
@@ -10,6 +11,12 @@ from app.db.repositories.prompt_cache_repository import (
     find_nearest_prompt_cache,
     insert_prompt_cache,
 )
+from app.services.cache_service import (
+    completion_diagnostics,
+    has_length_finish_reason,
+)
+
+logger = logging.getLogger(__name__)
 
 
 def _validate_embedding(embedding: list[float]) -> None:
@@ -38,6 +45,19 @@ async def save_prompt_cache(
     _validate_embedding(embedding)
     if not isinstance(response, dict):
         raise ValueError("Response must be a dictionary")
+    metrics = completion_diagnostics(response)
+    if has_length_finish_reason(response):
+        logger.warning(
+            "event=cache_save_skipped cache_type=semantic "
+            "reason=finish_reason_length content_chars=%s",
+            metrics["content_characters"],
+        )
+        return
+    logger.info(
+        "event=cache_save cache_type=semantic finish_reason=%s content_chars=%s",
+        metrics["finish_reasons"],
+        metrics["content_characters"],
+    )
     if not isinstance(model, str) or not model:
         raise ValueError("Model must not be empty")
 
@@ -100,7 +120,40 @@ async def find_similar_prompt_cache(
         )
     if candidate is None:
         return None
+    response = candidate.response
+    if isinstance(response, dict) and has_length_finish_reason(response):
+        metrics = completion_diagnostics(response)
+        logger.warning(
+            "event=cache_entry_rejected cache_type=semantic id=%s "
+            "reason=finish_reason_length content_chars=%s",
+            candidate.id,
+            metrics["content_characters"],
+        )
+        return None
+    choices = response.get("choices") if isinstance(response, dict) else None
 
+    has_content = False
+    if isinstance(choices, list):
+        for choice in choices:
+            if not isinstance(choice, dict):
+                continue
+
+            message = choice.get("message")
+            if not isinstance(message, dict):
+                continue
+
+            content = message.get("content")
+            if (
+                (isinstance(content, str) and content.strip())
+                or message.get("tool_calls")
+                or message.get("refusal")
+            ):
+                has_content = True
+                break
+
+    if not has_content:
+        logger.warning("Skipping invalid semantic cache entry id=%s", candidate.id)
+        return None
     similarity = 1.0 - candidate.cosine_distance
     if similarity < threshold:
         return None

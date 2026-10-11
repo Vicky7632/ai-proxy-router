@@ -88,6 +88,26 @@ async def save_semantic_cache(
     if lookup.embedding is None:
         return
 
+    choices = response.get("choices")
+    if not isinstance(choices, list) or not choices:
+        logger.warning("Skipping semantic cache save: empty choices")
+        return
+
+    has_content = any(
+        isinstance(choice, dict)
+        and isinstance(choice.get("message"), dict)
+        and (
+            bool(choice["message"].get("content", "").strip())
+            or bool(choice["message"].get("tool_calls"))
+            or bool(choice["message"].get("refusal"))
+        )
+        for choice in choices
+    )
+
+    if not has_content:
+        logger.warning("Skipping semantic cache save: empty response")
+        return
+
     try:
         await save_prompt_cache(
             prompt=lookup.prompt,

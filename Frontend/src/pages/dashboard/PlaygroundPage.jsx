@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useRef, useState } from "react";
 import { flushSync } from "react-dom";
 import { Link } from "react-router-dom";
 import FeedbackPanel from "../../components/FeedbackPanel";
@@ -13,6 +13,8 @@ function PlaygroundPage() {
   const [model, setModel] = useState("openai/gpt-oss-20b");
   const [prompt, setPrompt] = useState("");
   const [result, setResult] = useState(null);
+  const resultElement = useRef(null);
+  const resultRef = useRef("");
   const [error, setError] = useState("");
   const [submitting, setSubmitting] = useState(false);
 
@@ -20,6 +22,7 @@ function PlaygroundPage() {
     event.preventDefault();
     setSubmitting(true);
     setError("");
+    resultRef.current = "";
     setResult("");
     try {
       await chatService.stream(
@@ -30,11 +33,21 @@ function PlaygroundPage() {
           stream: true,
         },
         (chunk) =>
-          flushSync(() => setResult((prev) => prev + chunk)),
+          flushSync(() =>
+            setResult((previous) => {
+              const next = previous + chunk;
+              resultRef.current = next;
+              return next;
+            }),
+          ),
       );
     } catch (requestError) {
       setError(getErrorMessage(requestError, "The completion request failed."));
     } finally {
+      console.info("Chat response rendered", {
+        finalRenderedMessageCharacters:
+          resultElement.current?.textContent?.length ?? resultRef.current.length,
+      });
       setSubmitting(false);
     }
   }
@@ -120,7 +133,10 @@ function PlaygroundPage() {
               </div>
             ) : result !== null ? (
               <div className="p-5 sm:p-6">
-                <pre className="max-h-[520px] overflow-auto whitespace-pre-wrap break-words rounded-lg border border-slate-800 bg-slate-950 p-4 font-mono text-[12px] leading-6 text-slate-100 shadow-inner shadow-black/10">
+                <pre
+                  ref={resultElement}
+                  className="max-h-[520px] overflow-auto whitespace-pre-wrap break-words rounded-lg border border-slate-800 bg-slate-950 p-4 font-mono text-[12px] leading-6 text-slate-100 shadow-inner shadow-black/10"
+                >
                   {result}
                 </pre>
               </div>

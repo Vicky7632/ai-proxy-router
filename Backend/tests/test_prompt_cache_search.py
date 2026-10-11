@@ -150,7 +150,11 @@ async def test_service_returns_hit_and_correct_similarity(monkeypatch):
     candidate = PromptCacheCandidate(
         id=5,
         prompt="similar prompt",
-        response={"answer": "cached"},
+        response={
+            "choices": [
+                {"message": {"content": "cached"}, "finish_reason": "stop"}
+            ]
+        },
         model="test-model",
         provider="gemini",
         cosine_distance=0.08,
@@ -170,9 +174,43 @@ async def test_service_returns_hit_and_correct_similarity(monkeypatch):
     assert result.id == 5
     assert result.prompt == "similar prompt"
     assert result.similarity == pytest.approx(0.92)
-    assert result.response == {"answer": "cached"}
+    assert result.response == candidate.response
     assert result.model == "test-model"
     assert result.provider == "gemini"
+
+
+@pytest.mark.asyncio
+async def test_service_skips_semantic_entry_finished_by_length(monkeypatch, caplog):
+    caplog.set_level("WARNING")
+    candidate = PromptCacheCandidate(
+        id=9,
+        prompt="cached prompt",
+        response={
+            "choices": [
+                {
+                    "message": {"role": "assistant", "content": "partial"},
+                    "finish_reason": "length",
+                }
+            ]
+        },
+        model="test-model",
+        provider="groq",
+        cosine_distance=0.01,
+    )
+    monkeypatch.setattr(
+        prompt_cache_service,
+        "find_nearest_prompt_cache",
+        lambda embedding: candidate,
+    )
+
+    result = await prompt_cache_service.find_similar_prompt_cache(
+        [0.0] * 768,
+        similarity_threshold=0.9,
+    )
+
+    assert result is None
+    assert "cache_type=semantic id=9" in caplog.text
+    assert "content_chars=7" in caplog.text
 
 
 @pytest.mark.asyncio
@@ -183,7 +221,11 @@ async def test_service_returns_miss_below_similarity_threshold(monkeypatch):
         lambda embedding: PromptCacheCandidate(
             id=6,
             prompt="different prompt",
-            response={},
+            response={
+                "choices": [
+                    {"message": {"content": "cached"}, "finish_reason": "stop"}
+                ]
+            },
             model="test-model",
             provider=None,
             cosine_distance=0.21,
@@ -206,7 +248,11 @@ async def test_service_accepts_similarity_equal_to_threshold(monkeypatch):
         lambda embedding: PromptCacheCandidate(
             id=7,
             prompt="boundary prompt",
-            response={},
+            response={
+                "choices": [
+                    {"message": {"content": "cached"}, "finish_reason": "stop"}
+                ]
+            },
             model="test-model",
             provider=None,
             cosine_distance=0.1,
@@ -231,7 +277,11 @@ async def test_service_uses_configured_threshold_by_default(monkeypatch):
         lambda embedding: PromptCacheCandidate(
             id=8,
             prompt="prompt",
-            response={},
+            response={
+                "choices": [
+                    {"message": {"content": "cached"}, "finish_reason": "stop"}
+                ]
+            },
             model="test-model",
             provider=None,
             cosine_distance=0.08,
