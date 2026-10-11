@@ -1,745 +1,211 @@
 # AI Proxy Router
 
-A unified API gateway for chat completion requests across multiple LLM providers, with authentication, API-key management, multi-layer caching, semantic search, provider routing, health tracking, analytics, and streaming.
+AI Proxy Router is a self-hosted API gateway for chat completions. It gives
+applications one OpenAI-style chat endpoint in front of configured LLM
+providers, with API-key authentication, Redis exact-response caching,
+PostgreSQL/pgvector semantic caching, streaming, request analytics, and a React
+dashboard.
 
-## Overview
+> This repository contains a local Docker Compose setup and a Docker Desktop
+> Kubernetes setup. The Kubernetes manifests are for local development, not a
+> production-ready high-availability deployment.
 
-AI Proxy Router is a backend-focused AI infrastructure project designed to sit between applications and multiple LLM providers.
+## Key features
 
-Instead of every application integrating directly with individual providers, the router provides a unified API and handles:
+- Dashboard authentication with HTTP-only access and refresh cookies.
+- User-scoped proxy API key creation, listing, and revocation. A raw proxy key
+  is returned only once; the backend stores its SHA-256 hash.
+- OpenAI-compatible chat completion request shape with streamed SSE responses.
+- Redis exact-match caching followed by PostgreSQL/pgvector semantic caching.
+- Model-to-provider routing across Groq, Gemini, and OpenRouter integrations.
+- Redis-backed rate limiting and provider health/cooldown tracking.
+- PostgreSQL request, cache, token, latency, and cost records; cache analytics
+  scoped to the calling proxy key.
+- React dashboard pages for overview, API keys, Playground, provider health, and
+  cache analytics.
 
-* Authentication and API-key management
-* Exact response caching with Redis
-* Semantic caching with PostgreSQL + pgvector
-* Multi-provider routing
-* Provider health tracking and cooldowns
-* Request and cache analytics
-* Streaming chat completions
-* PostgreSQL persistence
-* Dockerized local deployment
-* React dashboard for monitoring and testing
+## Tech stack
 
-The goal was to understand how an AI gateway works internally rather than simply calling an LLM API.
-
----
+| Area | Implementation |
+| --- | --- |
+| API | Python 3.12, FastAPI, Pydantic, SQLAlchemy, Alembic |
+| Persistence | PostgreSQL with pgvector |
+| Cache and short-lived state | Redis |
+| Provider integrations | Groq, Google Gemini, OpenRouter |
+| Web UI | React 19, Vite, React Router, Tailwind CSS |
+| Containers | Docker, Docker Compose |
+| Local orchestration | Kubernetes on Docker Desktop |
 
 ## Architecture
 
-```text
-                    +----------------------+
-                    |   React Dashboard    |
-                    |  React + Tailwind    |
-                    +----------+-----------+
-                               |
-                               v
-                    +----------------------+
-                    |       FastAPI        |
-                    |     API Gateway      |
-                    +----------+-----------+
-                               |
-               +---------------+----------------+
-               |               |                |
-               v               v                v
-        +------------+  +-------------+  +--------------+
-        |   Redis    |  | PostgreSQL  |  |   Provider   |
-        |            |  | + pgvector  |  |   Router     |
-        | Exact Cache|  |Semantic Cache|  | Groq        |
-        | Sessions   |  | Analytics   |  | Gemini      |
-        | Health     |  |             |  | OpenRouter  |
-        +------------+  +-------------+  +--------------+
+```mermaid
+flowchart LR
+    Browser["React + Vite dashboard"]
+    API["FastAPI gateway"]
+    Redis["Redis<br/>exact cache, rate limit,<br/>auth sessions, provider health"]
+    PG["PostgreSQL + pgvector<br/>users, API keys, request logs,<br/>semantic cache"]
+    Router["Provider router"]
+    Groq["Groq"]
+    Gemini["Google Gemini"]
+    OpenRouter["OpenRouter"]
+
+    Browser -->|"HTTP / SSE"| API
+    API --> Redis
+    API --> PG
+    API --> Router
+    Router --> Groq
+    Router --> Gemini
+    Router --> OpenRouter
 ```
 
----
-
-## Request Flow
-
-The router checks the exact Redis cache first, then the semantic cache before
-making a provider request. A cache hit returns the stored response. A miss or
-lookup error continues through the remaining cache/provider flow; cache
-infrastructure failures do not fail an otherwise routable request.
-
-### 1. Redis Exact-Cache Hit
-
-```text
-Request
-   |
-   v
-Redis lookup
-   |
-   v
-HIT
-   |
-   v
-Return cached response
-```
-
-No embedding generation, semantic search, or provider call is required.
-
-### 2. Redis Miss or Error
-
-```text
-Request
-   |
-   v
-Redis lookup
-   |
-   +-- MISS or ERROR
-          |
-          v
-   Semantic cache lookup
-```
-
-A Redis connection failure or invalid cached payload is tracked as an error,
-not as a miss. The request continues to semantic lookup.
-
-### 3. Semantic Cache Hit
-
-```text
-Redis MISS or ERROR
-   |
-   v
-Generate embedding
-   |
-   v
-pgvector semantic search
-   |
-   v
-Semantic HIT
-   |
-   v
-Return existing response
-```
-
-This allows similar requests with different wording to reuse an existing response.
-
-### 4. Semantic Miss or Error
-
-```text
-Semantic cache lookup
-   |
-   +-- MISS or ERROR
-          |
-          v
-   Provider Router
-          |
-          v
-   LLM Provider
-          |
-          v
-   Store successful response in cache
-          |
-          v
-   Return response
-```
-
-Semantic embedding-generation and database lookup errors are tracked separately
-from misses. They do not prevent the request from continuing to provider
-routing. Successful provider responses are stored in Redis and, when a
-semantic embedding is available, in the semantic cache.
-
-### Complete Flow
-
-```text
-Client
-  |
-  v
-Authentication
-  |
-  v
-API Key Validation
-  |
-  v
-Redis Exact-Cache Lookup
-  |
-  v
-Semantic Cache Lookup (after Redis MISS or ERROR)
-  |
-  v
-Provider Selection (after semantic MISS or ERROR)
-  |
-  v
-LLM Provider
-  |
-  v
-Response Storage (successful provider response)
-  |
-  v
-Request and Cache Analytics
-  |
-  v
-Client
-```
-
----
-
-## Key Features
-
-### Authentication
-
-* JWT-based authentication
-* HTTP-only access and refresh-token cookies
-* Refresh-token rotation
-* Redis-backed refresh sessions
-* Access-token blacklist on logout
-* Protected dashboard routes
-
-### API Key Management
-
-* Generate proxy API keys
-* List active keys
-* Revoke keys
-* Raw API key returned only once
-* SHA-256 hash stored in the database
-* Separate API credentials from dashboard authentication
-
-Example:
-
-```http
-Authorization: Bearer sk-...
-```
-
----
-
-### Multi-Layer Caching
-
-#### Exact Cache
-
-Redis is used for fast exact-match response caching.
-
-```text
-Same request
-    |
-    v
-Redis HIT
-    |
-    v
-Cached response
-```
-
-#### Semantic Cache
-
-PostgreSQL + pgvector is used for similarity-based cache lookup.
-
-```text
-Similar request
-    |
-    v
-Generate embedding
-    |
-    v
-pgvector search
-    |
-    v
-Semantic HIT / MISS
-```
-
-The semantic cache also supports:
-
-* Similarity threshold
-* TTL
-* Automatic cleanup
-* Time-based expiration
-
----
-
-### Provider Routing
-
-The router supports multiple LLM providers:
-
-* Groq
-* Google Gemini
-* OpenRouter
-
-The provider layer abstracts provider-specific APIs behind a common interface.
-
-This allows the application to send requests through a single gateway instead of implementing separate integrations for every provider.
-
----
-
-### Provider Health Tracking
-
-Provider failures are tracked using Redis.
-
-The router records:
-
-* Request count
-* Failure count
-* Last successful request
-* Last failure
-* Provider health state
-
-Unhealthy providers can enter a cooldown period and the router can select another available provider.
-
----
-
-### Streaming
-
-The chat completion endpoint supports streaming responses using Server-Sent Events (SSE).
-
-```text
-Client
-  |
-  v
-FastAPI
-  |
-  v
-Redis exact-cache lookup
-  |
-  +-- HIT --> Return cached completion as SSE
-  |
-  +-- MISS --> Semantic-cache lookup
-                 |
-                 +-- HIT --> Return cached completion as SSE
-                 |
-                 +-- MISS --> Provider stream --> Forward SSE chunks
-                                  |
-                                  v
-                       Assemble completed response
-                                  |
-                                  v
-                       Save valid completion to Redis
-```
-
-Streaming requests use the same Redis exact-cache key as non-streaming requests. Redis is checked first; on a miss or error, the request checks the semantic cache. A semantic miss or error continues to the provider. Provider chunks are forwarded to the client as they arrive. The router assembles and stores the response only after a valid, complete provider stream; interrupted, failed, or incomplete streams are not cached. Successful responses are saved to Redis and, when an embedding is available, the semantic cache. Redis and semantic cache hits are returned as OpenAI-compatible SSE.
-
----
-
-### Cache Analytics
-
-The system records cache and provider activity in PostgreSQL.
-
-Tracked metrics include:
-
-* Total requests
-* Cache hits
-* Cache hit rate
-* Redis hits
-* Redis misses
-* Redis lookup errors
-* Semantic hits
-* Semantic misses
-* Semantic lookup errors
-* Provider calls
-* Time-window based analytics
-
-Cache lookup errors are recorded separately from misses and fall through to
-the next cache layer or provider routing rather than failing the request.
-The cache hit rate is cache hits divided by all recorded requests; requests
-with lookup errors remain in that denominator.
-
-Example:
-
-```text
-Total Requests      = 51
-Cache Hits          = 6
-Redis Hits          = 3
-Semantic Hits       = 3
-Redis Lookup Errors = 0
-Semantic Errors     = 0
-Provider Calls      = 11
-Cache Hit Rate      = 11.8%
-```
-
-### Cache and Provider Logs
-
-The backend emits INFO-level structured events to stderr (visible in backend container logs) for Redis and semantic cache lookup outcomes, streaming provider invocation, and successful streaming cache saves. Events include the cache type, outcome, request mode, model, and provider where applicable. Prompt contents and credentials are not logged.
-
-Example event names and outcomes:
-
-```text
-event=cache_lookup outcome=redis_miss cache_type=redis
-event=cache_lookup outcome=redis_error cache_type=redis
-event=cache_lookup outcome=semantic_miss cache_type=semantic
-event=cache_lookup outcome=semantic_error cache_type=semantic
-event=provider_invocation request_mode=stream
-event=stream_cache_save cache_type=redis outcome=saved
-event=cache_lookup outcome=redis_hit cache_type=redis
-```
-
----
-
-## Tech Stack
-
-### Backend
-
-* FastAPI
-* Python
-* SQLAlchemy
-* Alembic
-* Pydantic
-
-### Database
-
-* PostgreSQL
-* pgvector
-
-### Caching / State
-
-* Redis
-* Redis Cloud support
-
-### LLM Providers
-
-* Groq
-* Google Gemini
-* OpenRouter
-
-### Frontend
-
-* React
-* Vite
-* React Router
-* Tailwind CSS
-* Axios
-
-### Infrastructure
-
-* Docker
-* Docker Compose
-* Nginx
-
----
-
-## Project Structure
-
-```text
-AI Proxy Router
-+-- Backend
-|   +-- app
-|   |   +-- api
-|   |   +-- core
-|   |   +-- db
-|   |   +-- models
-|   |   +-- services
-|   |   +-- main.py
-|   +-- alembic
-|   +-- tests
-|   +-- DockerFile
-|   +-- requirements.txt
-+-- Frontend
-|   +-- src
-|   |   +-- components
-|   |   +-- pages
-|   |   +-- services
-|   |   +-- ...
-|   +-- Dockerfile
-|   +-- package.json
-+-- docker-compose.yml
-+-- README.md
-```
-
----
-
-## Running with Docker
-
-The project can be started as a complete local stack using Docker Compose.
-
-### Services
-
-| Service    |   Port |
-| ---------- | -----: |
-| Frontend   | `3000` |
-| Backend    | `8000` |
-| PostgreSQL | `5433` |
-| Redis      | `6379` |
-
-### Start
-
-```bash
+The browser calls the FastAPI service directly. Dashboard endpoints use
+HTTP-only cookies; chat, provider-health, and cache-analytics endpoints use a
+proxy API key in a Bearer Authorization header. PostgreSQL and Redis are
+separate services. In the Kubernetes manifests only the PostgreSQL and Redis
+Deployments mount persistent volume claims; the frontend and backend
+Deployments are not persistent workloads.
+
+For component boundaries and deployment diagrams, see
+[Architecture](docs/ARCHITECTURE.md).
+
+## Chat request lifecycle and cache strategy
+
+After API-key authentication, rate-limit and budget checks, the backend resolves
+the requested model, then evaluates the cache layers in this order:
+
+1. **Redis exact-match hit** — a canonicalized request hash identifies a
+   matching response. The response is returned without semantic lookup or a
+   provider call.
+2. **Redis miss, then semantic-cache hit** — the request is embedded and
+   compared with PostgreSQL/pgvector candidates for the same model and
+   temperature. A candidate is reused only when it contains usable response
+   content and meets the configured similarity threshold.
+3. **Both caches miss (or lookup errors), then provider call** — the router
+   calls the selected provider. Successful responses are saved to Redis and,
+   when an embedding is available, to the semantic cache.
+
+Cache lookup errors are recorded as errors, not counted as misses, and the
+request continues to the next cache layer or provider. A Redis key is based on
+the normalized chat request (excluding the `stream` flag); Redis entries use a
+one-hour TTL. The default semantic similarity threshold and TTL are `0.90` and
+one hour, respectively; settings can override them.
+
+**Incomplete streamed responses are not cached.** Stream assembly requires a
+valid SSE `[DONE]` marker, no stream parse/provider error, and a finish reason
+for each choice. A completion whose provider finish reason is `length` is
+delivered as received but skipped when saving to either cache. Existing Redis
+and semantic entries with `finish_reason: "length"` are rejected for replay.
+
+## Authentication and API keys
+
+Dashboard registration and login use HTTP-only cookies. The frontend checks
+the signed-in user through `/auth/me` and refreshes an expired access session
+through `/auth/refresh`.
+
+Proxy API keys are separate credentials. Create and manage them from **API
+keys** in the dashboard. The raw key is returned only at creation and cannot
+be recovered from the database. The frontend holds a connected proxy key in
+the current tab's `sessionStorage` so it survives reloads in that tab; closing
+the tab ends that browser session. Treat it as a credential and never include
+it in logs, screenshots, or issue reports.
+
+For exact request/response examples and authentication requirements, see
+[API reference](docs/API.md).
+
+## Cache analytics
+
+`GET /v1/analytics/cache` returns request totals for the authenticated proxy
+key. It reports Redis hits/misses/errors, semantic hits/misses/errors,
+provider calls, combined cache hits, and cache hit rate. Optional `from` and
+`to` UTC date-time query parameters define a half-open interval: `from` is
+inclusive and `to` is exclusive. The hit rate is cache hits divided by all
+recorded requests, multiplied by 100; requests with cache lookup errors remain
+in the denominator. `provider_calls` counts recorded requests with at least
+one provider attempt; retries/fallback attempts within one request are not
+counted as separate request records.
+
+## Documentation
+
+- [Architecture and component responsibilities](docs/ARCHITECTURE.md)
+- [API endpoint reference](docs/API.md)
+- [Local development setup](docs/LOCAL_SETUP.md)
+- [Docker Desktop Kubernetes guide](docs/KUBERNETES.md)
+- [Real screenshot checklist](docs/SCREENSHOTS.md)
+- Interactive FastAPI OpenAPI UI, when the backend is running: `/docs`
+
+## Local development
+
+### Docker Compose (recommended)
+
+From the repository root, ensure `Backend/.env` exists and contains the
+required backend configuration described in
+[Local setup](docs/LOCAL_SETUP.md). Do not commit that file or copy its values
+into documentation.
+
+```powershell
 docker compose up --build -d
-```
-
-Run database migrations:
-
-```bash
 docker compose exec backend alembic upgrade head
-```
-
-Check running services:
-
-```bash
 docker compose ps
 ```
 
-### Application
+The Compose UI is at `http://localhost:3000`; the API is at
+`http://localhost:8000`. Compose publishes PostgreSQL on `localhost:5433` and
+Redis on `localhost:6379`.
 
-Frontend:
+## Kubernetes deployment
 
-```text
-http://localhost:3000
-```
+The local Docker Desktop cluster uses namespace `ai-proxy-router`, frontend
+NodePort `30080`, and backend NodePort `30081`. Build and apply commands are
+documented in [Kubernetes deployment](docs/KUBERNETES.md). The frontend
+`VITE_API_BASE_URL` is compiled into the Vite bundle at image-build time; for
+this cluster build it must be `http://localhost:30081`.
 
-Swagger API documentation:
+## Tests
 
-```text
-http://localhost:8000/docs
-```
-
-PostgreSQL is exposed on:
-
-```text
-localhost:5433
-```
-
-Redis is exposed on:
-
-```text
-localhost:6379
-```
-
-Inside Docker, the backend connects to PostgreSQL and Redis using their Compose service names.
-
----
-
-## Local Development
-
-### Backend
+Run frontend tests from `Frontend`:
 
 ```powershell
-cd Backend
-
-python -m venv venv
-venv\Scripts\activate
-
-pip install -r requirements.txt
+npm test
+npm run build
 ```
 
-Create:
-
-```text
-Backend/.env
-```
-
-Example:
-
-```env
-DATABASE_URL=postgresql://user:password@localhost:5432/ai_proxy_router
-
-GROQ_API_KEY=your-groq-api-key
-GEMINI_API_KEY=your-gemini-api-key
-OPENROUTER_API_KEY=your-openrouter-api-key
-
-JWT_SECRET_KEY=replace-with-a-random-secret
-
-ACCESS_TOKEN_EXPIRE_MINUTES=15
-REFRESH_TOKEN_EXPIRE_DAYS=7
-
-REDIS_HOST=localhost
-REDIS_PORT=6379
-REDIS_USERNAME=
-REDIS_PASSWORD=
-REDIS_SSL=false
-REDIS_DB=0
-
-SEMANTIC_CACHE_TTL_SECONDS=3600
-SEMANTIC_CACHE_CLEANUP_INTERVAL_SECONDS=3600
-PROVIDER_HEALTH_COOLDOWN_SECONDS=60
-```
-
-Run migrations:
+Run backend tests from the repository root after installing backend
+dependencies and configuring the test environment:
 
 ```powershell
-alembic upgrade head
+.\.venv\Scripts\python.exe -m pytest Backend\tests -q
 ```
 
-Start the API:
+Some backend tests use database/Redis test doubles or SQLite; integration tests
+may require PostgreSQL/pgvector and Redis. See
+[Local setup](docs/LOCAL_SETUP.md) for details.
 
-```powershell
-python -m uvicorn app.main:app --reload
-```
+## Screenshots
 
-API documentation:
+No screenshots are included or claimed to have been captured. Use the safe,
+real-capture checklist in [Screenshots](docs/SCREENSHOTS.md); hide proxy keys,
+cookies, account data, and other secrets before saving or sharing captures.
 
-```text
-http://localhost:8000/docs
-```
+## Limitations and future improvements
 
----
+### Current limitations
 
-### Frontend
+- The supplied Kubernetes configuration runs one replica of each workload
+  and exposes the web/API services with local NodePorts.
+- Provider credentials and required database connection settings are read
+  from environment configuration; Kubernetes manifests reference a Secret
+  that must be provisioned separately.
+- The browser's connected proxy key is available to same-origin JavaScript
+  while that tab is open because it is kept in `sessionStorage`.
+- The dashboard's current analytics view reports the endpoint's aggregate
+  totals; although the API accepts time-window filters, the dashboard does not
+  expose date-range controls.
 
-```powershell
-cd Frontend
+### Future improvements (not currently implemented)
 
-npm install
-npm run dev
-```
-
-The development frontend runs on:
-
-```text
-http://localhost:3000
-```
-
-Configure the API URL in:
-
-```text
-Frontend/.env
-```
-
-Example:
-
-```env
-VITE_API_BASE_URL=http://localhost:8000
-```
-
----
-
-## Authentication Flow
-
-Dashboard authentication uses HTTP-only cookies.
-
-```text
-Register
-   |
-   v
-Login
-   |
-   v
-Access Token + Refresh Token
-   |
-   v
-HTTP-only Cookies
-   |
-   v
-Protected Dashboard
-```
-
-Important authentication endpoints:
-
-```text
-POST /auth/register
-POST /auth/login
-POST /auth/refresh
-POST /auth/logout
-GET  /auth/me
-```
-
-Proxy API keys are separate from dashboard authentication:
-
-```text
-POST /keys
-GET  /keys
-DELETE /keys/{key_id}
-
-POST /v1/chat/completions
-```
-
-The raw API key is shown only when it is created. Only its SHA-256 hash is persisted.
-
----
-
-## Chat Completion
-
-The main gateway endpoint is:
-
-```http
-POST /v1/chat/completions
-```
-
-with:
-
-```http
-Authorization: Bearer sk-...
-Content-Type: application/json
-```
-
-Example request:
-
-```json
-{
-  "model": "openai/gpt-oss-20b",
-  "messages": [
-    {
-      "role": "user",
-      "content": "Explain Redis caching in simple terms."
-    }
-  ]
-}
-```
-
-The router handles authentication, caching, provider selection, provider execution, response storage, and analytics.
-
----
-
-## Database Migrations
-
-Alembic is used for database schema management.
-
-Run:
-
-```bash
-alembic upgrade head
-```
-
-Create a new migration when required:
-
-```bash
-alembic revision --autogenerate -m "describe change"
-```
-
----
-
-## Testing
-
-The latest full backend test run completed with **142 passed, 47 warnings, in 7.33 seconds**.
-
-The backend includes automated tests covering core functionality.
-
-The project also includes manual end-to-end verification for:
-
-* Authentication
-* API-key creation and revocation
-* Exact Redis cache hits
-* Semantic cache hits
-* Provider fallback
-* Provider health
-* Cache analytics
-* Streaming responses
-* Dockerized application flow
-* Mobile frontend responsiveness
-
----
-
-## Design Goals
-
-The project was built around a few practical backend engineering goals:
-
-1. **Single API interface** for multiple LLM providers.
-2. **Avoid unnecessary provider calls** through exact and semantic caching.
-3. **Handle provider failures** using health tracking and routing.
-4. **Separate dashboard authentication from proxy API credentials.**
-5. **Observe the system** through request, cache, and provider analytics.
-6. **Support streaming** instead of only returning complete responses.
-7. **Make the complete system reproducible** with Docker Compose.
-
----
-
-## What I Learned
-
-This project started as a way to understand how an AI API gateway works internally.
-
-The implementation involved working through:
-
-* FastAPI backend architecture
-* PostgreSQL data modeling
-* Redis caching and state management
-* pgvector semantic search
-* LLM provider abstraction
-* Provider health and fallback
-* JWT authentication
-* Streaming with SSE
-* Docker and multi-container networking
-* Frontend-backend integration
-* Observability and analytics
-
-The most important part was not just implementing individual features, but understanding how they interact inside a real request lifecycle.
-
----
-
-## Author
-
-**Vicky Kumar**
-
-* GitHub: [Vicky7632](https://github.com/Vicky7632)
-* LinkedIn: [Vicky Kumar](https://www.linkedin.com/in/vicky-kumar-b390a1354/)
+- Production ingress, TLS termination, managed secret rotation, and
+  high-availability deployment patterns.
+- Broader operational dashboards, alerting, and configurable analytics
+  windows in the UI.
+- Additional provider adapters, resilience policies, and deployment
+  automation with environment-specific validation.
