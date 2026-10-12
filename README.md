@@ -182,9 +182,24 @@ may require PostgreSQL/pgvector and Redis. See
 
 ## Screenshots
 
-No screenshots are included or claimed to have been captured. Use the safe,
-real-capture checklist in [Screenshots](docs/SCREENSHOTS.md); hide proxy keys,
-cookies, account data, and other secrets before saving or sharing captures.
+See the [screenshots guide](docs/SCREENSHOTS.md) for descriptions and sharing
+safety notes.
+
+### Dashboard
+
+![Provider health dashboard](docs/screenshots/dashboard.png)
+
+### API key management
+
+![API key management page](docs/screenshots/api-keys.png)
+
+### Cache analytics
+
+![Cache analytics page](docs/screenshots/cache-analytics.png)
+
+### Swagger analytics response
+
+![Swagger cache analytics response](docs/screenshots/swagger-respose.png)
 
 ## Limitations and future improvements
 

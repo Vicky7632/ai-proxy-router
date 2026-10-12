@@ -1,53 +1,43 @@
-# Screenshot checklist
+# Screenshots
 
-This file is a capture plan, not a gallery. **No screenshots have been
-captured or included by this documentation change.** Capture the running,
-real application and keep the resulting files in an approved location.
+These are screenshots present in this repository. Review them for account or
+usage details before sharing them outside the project. In particular, the API
+key management screenshot shows account information in the dashboard sidebar;
+the visible key values are not shown.
 
-Before each capture:
+## Dashboard and provider health
 
-- Use a non-production account and test data where possible.
-- Hide or blur proxy API keys, provider credentials, passwords, JWTs, cookies,
-  email addresses, and any personal or operational data.
-- Do not expose browser DevTools request headers, `sessionStorage`, Kubernetes
-  Secret contents, or terminal environment values.
-- Use browser zoom/window sizing consistently; capture the actual UI without
-  fabricated overlays or altered metrics.
-- Review the image at full resolution before sharing. If redaction cannot be
-  done safely, do not publish that screenshot.
+![Provider health dashboard](screenshots/dashboard.png)
 
-## Suggested captures
+The dashboard's Provider health page displays request and failure counters
+for Groq, Gemini, and OpenRouter.
 
-- [ ] **Dashboard overview** — `dashboard-overview.png`
-  - Sign in using a demo account.
-  - Show the overview cards and navigation.
-  - Use safe, representative data; do not imply sample values are live.
+## API key management
 
-- [ ] **API-key management** — `api-key-management-redacted.png`
-  - Show key names/statuses and the management UI.
-  - Hide the raw secret immediately; do not capture the create-key reveal
-    panel with an unredacted value.
-  - Hide email/account identifiers if they are not intended for publication.
+![API key management page](screenshots/api-keys.png)
 
-- [ ] **Playground response** — `playground-chat-response.png`
-  - Submit a harmless test prompt and show the rendered response.
-  - Ensure the prompt/answer do not contain private customer or provider data.
-  - Avoid capturing authorization headers or console diagnostics containing
-    request content.
+The API keys page shows key creation and connection controls plus active and
+revoked key metadata. It does not display the raw key value.
 
-- [ ] **Cache analytics** — `cache-analytics.png`
-  - Show the actual analytics UI and the currently displayed totals.
-  - Do not invent or edit metric values; identify seeded/demo data if used.
+## Cache analytics
 
-- [ ] **Kubernetes workloads and PVCs** — `kubernetes-workloads-pvcs.png`
-  - Capture real `kubectl get deployments,pods,services,pvc -n ai-proxy-router`
-    output or an actual Kubernetes dashboard view.
-  - Redact hostnames, usernames, local file paths, and unrelated namespaces if
-    they reveal information that should not be shared.
-  - Never capture output that includes Secret values.
+![Cache analytics page](screenshots/cache-analytics.png)
 
-## Add captured images later
+The analytics page presents the cache hit rate and request totals, including
+Redis, semantic-cache, and provider-call counts.
 
-After capturing and reviewing images, place them in an intentional location
-(for example, `docs/images/`) and add Markdown references here. Do not add
-placeholder images or claim uncaptured screenshots exist.
+## Swagger analytics response
+
+![Swagger cache analytics response](screenshots/swagger-respose.png)
+
+This Swagger UI capture shows a successful response from the cache analytics
+endpoint. Its displayed request totals are the values in that screenshot and
+should not be interpreted as current live metrics.
+
+## Capturing additional screenshots
+
+Use real captures from the running application; do not fabricate or edit
+metric values. Hide proxy API keys, provider credentials, passwords, JWTs,
+cookies, and personal or operational data. For Kubernetes captures, avoid
+showing Secret contents or unrelated namespaces. Add any new images here
+using their exact filenames and paths relative to this document.
